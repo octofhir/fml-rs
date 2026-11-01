@@ -7,7 +7,7 @@ StructureMap engine, with a command-line tool `fml`.
 
 ## Status
 
-`fml-syntax`, `fml-model`, `fml-check` and the `fml` CLI work today:
+`fml-syntax`, `fml-model`, `fml-check`, `fml-engine` and the `fml` CLI work today:
 
 - lossless syntax tree: every byte of the input, comments included, is kept;
 - error-tolerant parser with precise diagnostics, so one mistake does not hide the rest of the file;
@@ -29,6 +29,16 @@ of the element, unknown variables, writes into source variables, unknown or abst
 arguments. Untyped groups are checked with the types they are called with. The cross-version maps
 check clean; elsewhere it finds real mistakes, such as the `tgt.identifer` typo in the FHIR test
 cases or a group in the R6 maps that uses a parameter it does not declare.
+
+`fml-engine` runs a StructureMap over FHIR JSON the way the reference engine does: extended
+groups, source filters (type, `where`, `check`, `log`, list modes, defaults), targets that create
+or reuse elements (repeating elements, choice elements written as `valueReference`, `share`),
+dependent groups, default groups chosen by type for simple copies, imported maps, and the
+transforms `create`, `copy`, `evaluate`, `truncate`, `cast`, `append`, `translate` (contained
+ConceptMaps), `reference`, `pointer`, `uuid`, `cc`, `c`, `id`, `cp` and `qty`. A rule may also have
+several sources. FHIRPath comes through a small trait; the `fhirpath` feature uses
+[octofhir-fhirpath](https://github.com/octofhir/fhirpath-rs). It passes all JSON structure-mapping
+tests of the FHIR test cases (the CDA ones need XML, which is out of scope).
 
 All 1,643 public maps we test against parse without errors, formatting them is idempotent,
 FML → StructureMap → FML → StructureMap gives back the same StructureMap for every one of them,
@@ -53,6 +63,7 @@ fml fmt --check maps/           # list unformatted files, exit 1 (CI)
 cat map.fml | fml fmt -         # stdin to stdout
 fml compile map.fml -o map.json # FML → StructureMap JSON
 fml print map.json              # StructureMap JSON → FML
+fml run map.fml input.json      # run a map; --maps dir/ for imported maps, --fhir r4
 fml parse map.fml               # print the syntax tree
 ```
 
@@ -73,6 +84,12 @@ let formatted = fml_syntax::format(source, &Default::default())?;
 let compiled = fml_model::compile(source);       // StructureMap + diagnostics
 let json = serde_json::to_string_pretty(&compiled.map)?;
 let fml = fml_model::print(&compiled.map);       // back to FML
+
+let definitions = fml_check::CoreDefinitions::new(fml_check::Release::R5);
+let expressions = fml_engine::FhirPathExpressions::new(fml_check::Release::R5).await?;
+let output = fml_engine::Engine::new(&definitions, expressions)
+    .transform(&compiled.map, &input)
+    .await?;                                     // output.target is FHIR JSON
 ```
 
 ## Plan

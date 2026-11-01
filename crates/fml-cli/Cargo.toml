@@ -1,11 +1,12 @@
 [package]
 name = "fml-cli"
-description = "Command-line tool for the FHIR Mapping Language: format, check, compile and print maps"
+description = "Command-line tool for the FHIR Mapping Language: format, check, compile, print and run maps"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.98"
 authors.workspace = true
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
@@ -19,5 +20,7 @@ path = "src/main.rs"
 fml-syntax = { path = "../fml-syntax", version = "0.1.0" }
 fml-model = { path = "../fml-model", version = "0.1.0" }
 fml-check = { path = "../fml-check", version = "0.1.0", features = ["fhirschema"] }
+fml-engine = { path = "../fml-engine", version = "0.1.0", features = ["fhirpath"] }
+tokio = { version = "1", features = ["rt"] }
 clap = { version = "4.6", features = ["derive"] }
 serde_json = "1"

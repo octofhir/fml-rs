@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fml_check::{CoreDefinitions, Release};
+use fml_engine::{Engine, FhirPathExpressions, MapSet};
 use fml_syntax::{Diagnostic, FormatError, FormatOptions, LineIndex, Severity, format, parse};
 
 #[derive(Parser)]
@@ -55,6 +56,20 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Run a map (FML or StructureMap JSON) over a FHIR JSON input.
+    Run {
+        map: PathBuf,
+        input: PathBuf,
+        /// Write the result here instead of standard output.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// FHIR release of the input and output: r4, r4b, r5 or r6.
+        #[arg(long, default_value = "r5", value_parser = parse_release)]
+        fhir: Release,
+        /// Maps to import groups from: files or directories of FML or StructureMap JSON.
+        #[arg(long = "maps")]
+        maps: Vec<PathBuf>,
+    },
     /// Print a StructureMap (JSON) as FML.
     Print {
         path: PathBuf,
@@ -99,6 +114,13 @@ fn main() -> ExitCode {
         Command::Parse { path } => dump(&path),
         Command::Compile { path, output } => compile(&path, output.as_deref()),
         Command::Print { path, output } => print(&path, output.as_deref()),
+        Command::Run {
+            map,
+            input,
+            output,
+            fhir,
+            maps,
+        } => run(&map, &input, output.as_deref(), fhir, &maps),
     };
     match result {
         Ok(code) => code,
@@ -293,6 +315,75 @@ fn print(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
         .into());
     }
     write_output(output, &fml_model::print(&map))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A StructureMap from FML or JSON.
+fn load_map(path: &Path) -> Result<fml_model::StructureMap> {
+    let text = std::fs::read_to_string(path)?;
+    if path.extension().is_some_and(|e| e == "json") {
+        return Ok(serde_json::from_str(&text)
+            .map_err(|e| format!("{}: not a StructureMap: {e}", path.display()))?);
+    }
+    let compiled = fml_model::compile(&text);
+    if compiled.has_errors() {
+        let mut stderr = std::io::stderr();
+        let color = stderr.is_terminal();
+        for diagnostic in &compiled.diagnostics {
+            render(&mut stderr, path, &text, diagnostic, color)?;
+        }
+        return Err(format!("{}: the map has errors", path.display()).into());
+    }
+    Ok(compiled.map)
+}
+
+fn run(
+    map: &Path,
+    input: &Path,
+    output: Option<&Path>,
+    release: Release,
+    imports: &[PathBuf],
+) -> Result<ExitCode> {
+    let structure_map = load_map(map)?;
+    let source: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(input)?)
+        .map_err(|e| format!("{}: not JSON: {e}", input.display()))?;
+    let mut maps = MapSet::new();
+    for path in imports {
+        let candidates = if path.is_dir() {
+            let mut found = files(std::slice::from_ref(path))?;
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?.path();
+                if entry.extension().is_some_and(|e| e == "json") {
+                    found.push(entry);
+                }
+            }
+            found
+        } else {
+            vec![path.clone()]
+        };
+        for candidate in candidates {
+            maps.add(load_map(&candidate)?);
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(|e| format!("cannot start the runtime: {e}"))?;
+    let definitions = CoreDefinitions::new(release);
+    let transformed = runtime.block_on(async {
+        let expressions = FhirPathExpressions::new(release).await?;
+        Engine::new(&definitions, expressions)
+            .with_maps(&maps)
+            .transform(&structure_map, &source)
+            .await
+            .map_err(|e| e.to_string())
+    })?;
+    for message in &transformed.log {
+        eprintln!("log: {message}");
+    }
+    write_output(
+        output,
+        &(serde_json::to_string_pretty(&transformed.target)? + "\n"),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
