@@ -5,6 +5,49 @@ StructureMap engine, with a command-line tool `fml`.
 
 > Early development. Nothing is published yet.
 
+## Status
+
+`fml-syntax` and the `fml` CLI work today:
+
+- lossless syntax tree: every byte of the input, comments included, is kept;
+- error-tolerant parser with precise diagnostics, so one mistake does not hide the rest of the file;
+- formatter that keeps every comment and verifies its output parses back to the same map;
+- grammar of the Mapping Language IG plus the forms used by maps written for R3–R5:
+  `map "url" = "name"`, unparenthesised `where`, embedded `conceptmap`, `<<type+>>` groups.
+
+All 1,643 public maps we test against parse without errors, and formatting them is idempotent:
+the [cross-version maps](https://github.com/HL7/fhir-cross-version), the
+[R6 maps](https://github.com/brianpos/fhir-r6-maps), the Mapping Language IG examples and the
+[FHIR test cases](https://github.com/FHIR/fhir-test-cases). Run the same check locally with
+`scripts/fetch-corpus.sh && cargo test -p fml-syntax --test corpus -- --nocapture`.
+
+## Usage
+
+```sh
+cargo install --path crates/fml-cli
+
+fml check maps/                 # syntax errors, rustc-style; --format json for tools
+fml fmt maps/                   # format in place
+fml fmt --check maps/           # list unformatted files, exit 1 (CI)
+cat map.fml | fml fmt -         # stdin to stdout
+fml parse map.fml               # print the syntax tree
+```
+
+As a library:
+
+```rust
+let parse = fml_syntax::parse(source);
+for diagnostic in parse.diagnostics() {
+    eprintln!("{}", diagnostic.message);
+}
+for group in parse.tree().groups() {
+    for rule in group.rules() {
+        // sources, targets, transforms, dependent rules…
+    }
+}
+let formatted = fml_syntax::format(source, &Default::default())?;
+```
+
 ## Plan
 
 | Crate | Purpose |
