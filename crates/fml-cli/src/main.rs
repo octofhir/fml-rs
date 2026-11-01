@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use fml_check::{CoreDefinitions, Release};
 use fml_syntax::{Diagnostic, FormatError, FormatOptions, LineIndex, Severity, format, parse};
 
 #[derive(Parser)]
@@ -31,13 +32,19 @@ enum Command {
         #[arg(long)]
         tabs: bool,
     },
-    /// Report syntax errors.
+    /// Report syntax errors and type errors.
     Check {
         /// Files or directories.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+        /// FHIR release that unversioned core URLs refer to: r4, r4b, r5 or r6.
+        #[arg(long, default_value = "r5", value_parser = parse_release)]
+        fhir: Release,
+        /// Check syntax only.
+        #[arg(long)]
+        syntax_only: bool,
     },
     /// Print the syntax tree of a file.
     Parse { path: PathBuf },
@@ -79,7 +86,16 @@ fn main() -> ExitCode {
                 use_tabs: tabs,
             },
         ),
-        Command::Check { paths, format } => check(&paths, format),
+        Command::Check {
+            paths,
+            format,
+            fhir,
+            syntax_only,
+        } => check(
+            &paths,
+            format,
+            (!syntax_only).then(|| CoreDefinitions::new(fhir)),
+        ),
         Command::Parse { path } => dump(&path),
         Command::Compile { path, output } => compile(&path, output.as_deref()),
         Command::Print { path, output } => print(&path, output.as_deref()),
@@ -189,7 +205,16 @@ fn report_format_error(path: &Path, text: &str, error: &FormatError) {
     }
 }
 
-fn check(paths: &[PathBuf], output: OutputFormat) -> Result<ExitCode> {
+fn parse_release(name: &str) -> std::result::Result<Release, String> {
+    Release::parse(name)
+        .ok_or_else(|| format!("unknown FHIR release `{name}`; use r4, r4b, r5 or r6"))
+}
+
+fn check(
+    paths: &[PathBuf],
+    output: OutputFormat,
+    definitions: Option<CoreDefinitions>,
+) -> Result<ExitCode> {
     let mut errors = 0;
     let mut files_checked = 0;
     let mut json = Vec::new();
@@ -200,7 +225,13 @@ fn check(paths: &[PathBuf], output: OutputFormat) -> Result<ExitCode> {
         files_checked += 1;
         let parse = parse(&text);
         let index = LineIndex::new(&text);
-        for diagnostic in parse.diagnostics() {
+        let mut diagnostics = parse.diagnostics().to_vec();
+        if let Some(definitions) = &definitions
+            && !parse.has_errors()
+        {
+            diagnostics.extend(fml_check::check(&parse.tree(), definitions));
+        }
+        for diagnostic in &diagnostics {
             if diagnostic.severity == Severity::Error {
                 errors += 1;
             }

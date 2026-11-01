@@ -7,7 +7,7 @@ StructureMap engine, with a command-line tool `fml`.
 
 ## Status
 
-`fml-syntax`, `fml-model` and the `fml` CLI work today:
+`fml-syntax`, `fml-model`, `fml-check` and the `fml` CLI work today:
 
 - lossless syntax tree: every byte of the input, comments included, is kept;
 - error-tolerant parser with precise diagnostics, so one mistake does not hide the rest of the file;
@@ -20,6 +20,15 @@ StructureMap engine, with a command-line tool `fml`.
 the simple copy form, batch identity rules, embedded concept maps as contained ConceptMaps,
 documentation from comments, FHIRPath stored in canonical form. It also prints a StructureMap back
 as FML, including maps built by older IG Publisher versions.
+
+`fml-check` follows every rule with the types of its variables, against the FHIR R4, R4B, R5 and
+R6 definitions (including the version-specific `http://hl7.org/fhir/4.0/…` URLs of the
+cross-version maps), and reports elements that do not exist, type annotations that are not a type
+of the element, unknown variables, writes into source variables, unknown or abstract types in
+`create`, wrong transform arity, and calls to undeclared groups or with the wrong number of
+arguments. Untyped groups are checked with the types they are called with. The cross-version maps
+check clean; elsewhere it finds real mistakes, such as the `tgt.identifer` typo in the FHIR test
+cases or a group in the R6 maps that uses a parameter it does not declare.
 
 All 1,643 public maps we test against parse without errors, formatting them is idempotent,
 FML → StructureMap → FML → StructureMap gives back the same StructureMap for every one of them,
@@ -37,7 +46,8 @@ the [cross-version maps](https://github.com/HL7/fhir-cross-version), the
 ```sh
 cargo install --path crates/fml-cli
 
-fml check maps/                 # syntax errors, rustc-style; --format json for tools
+fml check maps/                 # syntax and type errors, rustc-style; --format json for tools
+fml check --fhir r4 maps/       # unversioned core URLs mean R4 (default r5)
 fml fmt maps/                   # format in place
 fml fmt --check maps/           # list unformatted files, exit 1 (CI)
 cat map.fml | fml fmt -         # stdin to stdout
@@ -71,7 +81,7 @@ let fml = fml_model::print(&compiled.map);       // back to FML
 |---|---|
 | `fml-syntax` | Lexer, lossless syntax tree, error-tolerant parser, diagnostics, formatter |
 | `fml-model` | StructureMap model (R4, R5 and the Mapping Language IG), FML ⇄ StructureMap |
-| `fml-check` | Type checking against FHIR structure definitions: paths, types, group signatures, imports |
+| `fml-check` | Type checking against FHIR structure definitions: paths, types, variables, group calls |
 | `fml-engine` | StructureMap execution: groups, dependent rules, list modes, transforms, FHIRPath, tracing |
 | `fhir-convert` | FHIR version conversion built on the cross-version maps, with a loss report |
 | `fml-cli` | The `fml` binary: `fmt`, `check`, `compile`, `print`, `run`, `convert` |
