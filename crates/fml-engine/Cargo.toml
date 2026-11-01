@@ -1,0 +1,37 @@
+[package]
+name = "fml-engine"
+description = "StructureMap engine for the FHIR Mapping Language: run maps over FHIR JSON"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.98"
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+# FHIRPath through octofhir-fhirpath, with the embedded core definitions.
+fhirpath = [
+  "dep:octofhir-fhirpath",
+  "dep:octofhir-fhirschema",
+  "dep:octofhir-fhir-model",
+  "fml-check/fhirschema",
+]
+
+[dependencies]
+fml-syntax = { path = "../fml-syntax", version = "0.1.0" }
+fml-model = { path = "../fml-model", version = "0.1.0" }
+fml-check = { path = "../fml-check", version = "0.1.0" }
+serde_json = { version = "1", features = ["preserve_order"] }
+uuid = { version = "1", features = ["v4"] }
+octofhir-fhirpath = { version = "0.4.57", optional = true }
+octofhir-fhirschema = { version = "0.3.31", optional = true }
+octofhir-fhir-model = { version = "0.1.17", optional = true }
+
+[dev-dependencies]
+fml-check = { path = "../fml-check", version = "0.1.0", features = ["fhirschema"] }
+tokio = { version = "1", features = ["macros", "rt"] }
