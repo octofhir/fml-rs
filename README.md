@@ -61,7 +61,7 @@ fml check --fhir r4 maps/       # unversioned core URLs mean R4 (default r5)
 fml fmt maps/                   # format in place
 fml fmt --check maps/           # list unformatted files, exit 1 (CI)
 cat map.fml | fml fmt -         # stdin to stdout
-fml compile map.fml -o map.json # FML → StructureMap JSON
+fml compile map.fml -o map.json # FML → StructureMap JSON (--fhir r4 for the R4 form)
 fml print map.json              # StructureMap JSON → FML
 fml run map.fml input.json      # run a map; --maps dir/ for imported maps, --fhir r4
 fml parse map.fml               # print the syntax tree

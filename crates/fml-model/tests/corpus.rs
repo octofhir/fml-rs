@@ -79,6 +79,14 @@ fn print_round_trips() {
             ));
         } else if print(&second.map) != printed {
             failures.push(format!("{}: printing is not stable", path.display()));
+        } else if first.map.constants.is_empty() {
+            // R4 has no `const`; every other map survives the R4 form unchanged.
+            let r4 = fml_model::to_r4(&first.map);
+            match fml_model::from_json(r4.json) {
+                Ok(back) if back == first.map => {}
+                Ok(_) => failures.push(format!("{}: R4 form does not read back", path.display())),
+                Err(error) => failures.push(format!("{}: R4 form: {error}", path.display())),
+            }
         }
     }
     eprintln!(

@@ -19,6 +19,7 @@
 
 mod canonical;
 mod compile;
+pub mod flavor;
 pub mod model;
 mod print;
 
@@ -27,5 +28,6 @@ pub use compile::{
     SOURCE_ELEMENT_EXTENSION, TARGET_ELEMENT_EXTENSION, compile, compile_tree, make_id,
     source_path,
 };
+pub use flavor::{R4Map, from_json, to_r4};
 pub use model::StructureMap;
 pub use print::print;

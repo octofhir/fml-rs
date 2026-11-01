@@ -55,6 +55,9 @@ enum Command {
         /// Write the StructureMap here instead of standard output.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// FHIR release of the StructureMap: r4 and r4b write the R4 form, r5 and r6 the R5 one.
+        #[arg(long, default_value = "r5", value_parser = parse_release)]
+        fhir: Release,
     },
     /// Run a map (FML or StructureMap JSON) over a FHIR JSON input.
     Run {
@@ -112,7 +115,7 @@ fn main() -> ExitCode {
             (!syntax_only).then(|| CoreDefinitions::new(fhir)),
         ),
         Command::Parse { path } => dump(&path),
-        Command::Compile { path, output } => compile(&path, output.as_deref()),
+        Command::Compile { path, output, fhir } => compile(&path, output.as_deref(), fhir),
         Command::Print { path, output } => print(&path, output.as_deref()),
         Command::Run {
             map,
@@ -286,7 +289,7 @@ fn check(
     })
 }
 
-fn compile(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
+fn compile(path: &Path, output: Option<&Path>, release: Release) -> Result<ExitCode> {
     let text = std::fs::read_to_string(path)?;
     let compiled = fml_model::compile(&text);
     let mut stderr = std::io::stderr();
@@ -297,14 +300,25 @@ fn compile(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
     if compiled.has_errors() {
         return Ok(ExitCode::FAILURE);
     }
-    let json = serde_json::to_string_pretty(&compiled.map)? + "\n";
-    write_output(output, &json)?;
+    let json = match release {
+        Release::R4 | Release::R4B => {
+            let r4 = fml_model::to_r4(&compiled.map);
+            for dropped in &r4.dropped {
+                eprintln!("warning: R4 cannot express {dropped}");
+            }
+            r4.json
+        }
+        Release::R5 | Release::R6 => serde_json::to_value(&compiled.map)?,
+    };
+    write_output(output, &(serde_json::to_string_pretty(&json)? + "\n"))?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn print(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
     let text = std::fs::read_to_string(path)?;
-    let map: fml_model::StructureMap = serde_json::from_str(&text)
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
+    let map = fml_model::from_json(json)
         .map_err(|e| format!("{}: not a StructureMap: {e}", path.display()))?;
     if map.resource_type != "StructureMap" {
         return Err(format!(
@@ -322,7 +336,9 @@ fn print(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
 fn load_map(path: &Path) -> Result<fml_model::StructureMap> {
     let text = std::fs::read_to_string(path)?;
     if path.extension().is_some_and(|e| e == "json") {
-        return Ok(serde_json::from_str(&text)
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
+        return Ok(fml_model::from_json(json)
             .map_err(|e| format!("{}: not a StructureMap: {e}", path.display()))?);
     }
     let compiled = fml_model::compile(&text);

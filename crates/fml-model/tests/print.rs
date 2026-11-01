@@ -88,3 +88,41 @@ group RoundTrip(source src : Patient, target tgt : Patient) {
     let printed = print(&first.map);
     assert_eq!(printed, source);
 }
+
+#[test]
+fn reads_and_writes_the_r4_form() {
+    let compiled = compile(
+        r#"conceptmap "g" {
+  prefix s = "http://hl7.org/fhir/administrative-gender"
+  prefix t = "http://terminology.hl7.org/CodeSystem/v2-0001"
+  s:male <= t:M
+}
+
+group G(source src, target tgt) {
+  src.a default ('x') as a -> tgt.b = a "copy";
+  src.c as c -> tgt.d as d then Inner(c, d) "call";
+}
+
+group Inner(source s, target t) {
+  s.e -> t.e;
+}
+"#,
+    );
+    assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
+    let r4 = fml_model::to_r4(&compiled.map);
+    assert!(r4.dropped.is_empty());
+    let json = &r4.json;
+    let rules = &json["group"][0]["rule"];
+    assert_eq!(json["group"][0]["typeMode"], "none");
+    assert_eq!(rules[0]["source"][0]["defaultValueString"], "x");
+    assert_eq!(rules[0]["target"][0]["contextType"], "variable");
+    assert_eq!(
+        rules[1]["dependent"][0]["variable"],
+        serde_json::json!(["c", "d"])
+    );
+    assert_eq!(
+        json["contained"][0]["group"][0]["element"][0]["target"][0]["equivalence"],
+        "wider"
+    );
+    assert_eq!(fml_model::from_json(r4.json.clone()).unwrap(), compiled.map);
+}
