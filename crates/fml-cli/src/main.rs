@@ -41,6 +41,20 @@ enum Command {
     },
     /// Print the syntax tree of a file.
     Parse { path: PathBuf },
+    /// Compile an FML file to a StructureMap (JSON).
+    Compile {
+        path: PathBuf,
+        /// Write the StructureMap here instead of standard output.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Print a StructureMap (JSON) as FML.
+    Print {
+        path: PathBuf,
+        /// Write the FML here instead of standard output.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -67,6 +81,8 @@ fn main() -> ExitCode {
         ),
         Command::Check { paths, format } => check(&paths, format),
         Command::Parse { path } => dump(&path),
+        Command::Compile { path, output } => compile(&path, output.as_deref()),
+        Command::Print { path, output } => print(&path, output.as_deref()),
     };
     match result {
         Ok(code) => code,
@@ -215,6 +231,46 @@ fn check(paths: &[PathBuf], output: OutputFormat) -> Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn compile(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
+    let text = std::fs::read_to_string(path)?;
+    let compiled = fml_model::compile(&text);
+    let mut stderr = std::io::stderr();
+    let color = stderr.is_terminal();
+    for diagnostic in &compiled.diagnostics {
+        render(&mut stderr, path, &text, diagnostic, color)?;
+    }
+    if compiled.has_errors() {
+        return Ok(ExitCode::FAILURE);
+    }
+    let json = serde_json::to_string_pretty(&compiled.map)? + "\n";
+    write_output(output, &json)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
+    let text = std::fs::read_to_string(path)?;
+    let map: fml_model::StructureMap = serde_json::from_str(&text)
+        .map_err(|e| format!("{}: not a StructureMap: {e}", path.display()))?;
+    if map.resource_type != "StructureMap" {
+        return Err(format!(
+            "{}: expected a StructureMap, found {}",
+            path.display(),
+            map.resource_type
+        )
+        .into());
+    }
+    write_output(output, &fml_model::print(&map))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn write_output(output: Option<&Path>, text: &str) -> Result<()> {
+    match output {
+        Some(path) => std::fs::write(path, text)?,
+        None => std::io::stdout().write_all(text.as_bytes())?,
+    }
+    Ok(())
 }
 
 fn dump(path: &Path) -> Result<ExitCode> {

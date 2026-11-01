@@ -7,7 +7,7 @@ StructureMap engine, with a command-line tool `fml`.
 
 ## Status
 
-`fml-syntax` and the `fml` CLI work today:
+`fml-syntax`, `fml-model` and the `fml` CLI work today:
 
 - lossless syntax tree: every byte of the input, comments included, is kept;
 - error-tolerant parser with precise diagnostics, so one mistake does not hide the rest of the file;
@@ -15,11 +15,18 @@ StructureMap engine, with a command-line tool `fml`.
 - grammar of the Mapping Language IG plus the forms used by maps written for R3–R5:
   `map "url" = "name"`, unparenthesised `where`, embedded `conceptmap`, `<<type+>>` groups.
 
-All 1,643 public maps we test against parse without errors, and formatting them is idempotent:
+`fml-model` compiles FML to a StructureMap the way the HL7 reference compiler
+(`StructureMapUtilities` in org.hl7.fhir.core) does: generated rule names, the `vvv` variables of
+the simple copy form, batch identity rules, embedded concept maps as contained ConceptMaps,
+documentation from comments, FHIRPath stored in canonical form. It also prints a StructureMap back
+as FML, including maps built by older IG Publisher versions.
+
+All 1,643 public maps we test against parse without errors, formatting them is idempotent, and
+FML → StructureMap → FML → StructureMap gives back the same StructureMap for every one of them:
 the [cross-version maps](https://github.com/HL7/fhir-cross-version), the
 [R6 maps](https://github.com/brianpos/fhir-r6-maps), the Mapping Language IG examples and the
 [FHIR test cases](https://github.com/FHIR/fhir-test-cases). Run the same check locally with
-`scripts/fetch-corpus.sh && cargo test -p fml-syntax --test corpus -- --nocapture`.
+`scripts/fetch-corpus.sh && cargo test --test corpus -- --nocapture`.
 
 ## Usage
 
@@ -30,6 +37,8 @@ fml check maps/                 # syntax errors, rustc-style; --format json for 
 fml fmt maps/                   # format in place
 fml fmt --check maps/           # list unformatted files, exit 1 (CI)
 cat map.fml | fml fmt -         # stdin to stdout
+fml compile map.fml -o map.json # FML → StructureMap JSON
+fml print map.json              # StructureMap JSON → FML
 fml parse map.fml               # print the syntax tree
 ```
 
@@ -46,6 +55,10 @@ for group in parse.tree().groups() {
     }
 }
 let formatted = fml_syntax::format(source, &Default::default())?;
+
+let compiled = fml_model::compile(source);       // StructureMap + diagnostics
+let json = serde_json::to_string_pretty(&compiled.map)?;
+let fml = fml_model::print(&compiled.map);       // back to FML
 ```
 
 ## Plan

@@ -28,4 +28,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: scripts/fetch-corpus.sh
-      - run: cargo test -p fml-syntax --test corpus -- --nocapture
+      - run: cargo test --test corpus -- --nocapture
