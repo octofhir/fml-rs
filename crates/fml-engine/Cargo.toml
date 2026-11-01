@@ -28,7 +28,7 @@ fml-model = { path = "../fml-model", version = "0.1.0" }
 fml-check = { path = "../fml-check", version = "0.1.0" }
 serde_json = { version = "1", features = ["preserve_order"] }
 uuid = { version = "1", features = ["v4"] }
-octofhir-fhirpath = { version = "0.5.0", optional = true }
+octofhir-fhirpath = { version = "0.5.1", optional = true }
 octofhir-fhirschema = { version = "0.3.32", optional = true }
 octofhir-fhir-model = { version = "0.1.17", optional = true }
 
