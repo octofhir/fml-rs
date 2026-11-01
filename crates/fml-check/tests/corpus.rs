@@ -59,12 +59,7 @@ fn checks_the_corpus() {
         let index = LineIndex::new(&text);
         for diagnostic in check(&parse.tree(), &definitions) {
             let at = index.line_col(&text, diagnostic.range.start());
-            let line = format!(
-                "{}:{}: {}",
-                path.display(),
-                at.line + 1,
-                diagnostic.message
-            );
+            let line = format!("{}:{}: {}", path.display(), at.line + 1, diagnostic.message);
             if path.to_string_lossy().contains("fhir-cross-version") {
                 regressions.push(line);
             } else {
