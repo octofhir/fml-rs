@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use fml_check::{CoreDefinitions, Release};
-use fml_engine::{Engine, FhirPathExpressions, MapSet};
+use fml_check::{CoreDefinitions, PackageDefinitions, Release};
+use fml_engine::{ConceptMapSet, Engine, FhirPathExpressions, MapSet, debug_parameters};
 use fml_syntax::{Diagnostic, FormatError, FormatOptions, LineIndex, Severity, format, parse};
+use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
 
 #[derive(Parser)]
 #[command(name = "fml", version, about = "FHIR Mapping Language tools")]
@@ -46,6 +47,10 @@ enum Command {
         /// Check syntax only.
         #[arg(long)]
         syntax_only: bool,
+        /// FHIR packages with more definitions (profiles, extensions, logical models): a
+        /// folder, or `name@version` to install from the package registry.
+        #[arg(long = "package")]
+        packages: Vec<String>,
     },
     /// Print the syntax tree of a file.
     Parse { path: PathBuf },
@@ -69,9 +74,21 @@ enum Command {
         /// FHIR release of the input and output: r4, r4b, r5 or r6.
         #[arg(long, default_value = "r5", value_parser = parse_release)]
         fhir: Release,
-        /// Maps to import groups from: files or directories of FML or StructureMap JSON.
+        /// Maps to import groups from, and ConceptMaps for translate(): files or directories of
+        /// FML, StructureMap JSON and ConceptMap JSON.
         #[arg(long = "maps")]
         maps: Vec<PathBuf>,
+        /// Write a debug trace instead of the result: the Parameters `$transform` returns with
+        /// `debug=true` (the result, the trace events and, on failure, an OperationOutcome).
+        #[arg(long)]
+        debug: bool,
+        /// Write a collection Bundle of the target and the resources the map produced.
+        #[arg(long)]
+        bundle: bool,
+        /// FHIR packages with definitions, StructureMaps and ConceptMaps: a folder, or
+        /// `name@version` to install from the package registry.
+        #[arg(long = "package")]
+        packages: Vec<String>,
     },
     /// Print a StructureMap (JSON) as FML.
     Print {
@@ -109,11 +126,17 @@ fn main() -> ExitCode {
             format,
             fhir,
             syntax_only,
-        } => check(
-            &paths,
-            format,
-            (!syntax_only).then(|| CoreDefinitions::new(fhir)),
-        ),
+            packages,
+        } => {
+            if syntax_only {
+                check(&paths, format, None)
+            } else {
+                match definitions_with(fhir, &packages) {
+                    Ok((definitions, _)) => check(&paths, format, Some(&definitions)),
+                    Err(error) => Err(error),
+                }
+            }
+        }
         Command::Parse { path } => dump(&path),
         Command::Compile { path, output, fhir } => compile(&path, output.as_deref(), fhir),
         Command::Print { path, output } => print(&path, output.as_deref()),
@@ -123,7 +146,18 @@ fn main() -> ExitCode {
             output,
             fhir,
             maps,
-        } => run(&map, &input, output.as_deref(), fhir, &maps),
+            debug,
+            bundle,
+            packages,
+        } => run(
+            &map,
+            &input,
+            output.as_deref(),
+            fhir,
+            &maps,
+            &packages,
+            RunOutput { debug, bundle },
+        ),
     };
     match result {
         Ok(code) => code,
@@ -235,10 +269,121 @@ fn parse_release(name: &str) -> std::result::Result<Release, String> {
         .ok_or_else(|| format!("unknown FHIR release `{name}`; use r4, r4b, r5 or r6"))
 }
 
+/// The core definitions of a release, with the StructureDefinitions of `packages` in front, and
+/// the resources of those packages (for the StructureMaps and ConceptMaps in them).
+fn definitions_with(
+    release: Release,
+    packages: &[String],
+) -> Result<(PackageDefinitions<CoreDefinitions>, Vec<Resource>)> {
+    let mut definitions = PackageDefinitions::new(CoreDefinitions::new(release));
+    let mut resources = Vec::new();
+    for package in packages {
+        for resource in package_resources(package)? {
+            if let Err(problem) = definitions.add(&resource.json) {
+                eprintln!("warning: {}: {problem}", resource.origin);
+            }
+            resources.push(resource);
+        }
+    }
+    Ok((definitions, resources))
+}
+
+/// A resource read from a package, with where it came from for messages.
+struct Resource {
+    origin: String,
+    json: serde_json::Value,
+}
+
+/// The resource types the tools use from a package.
+const PACKAGE_TYPES: [&str; 3] = ["StructureDefinition", "StructureMap", "ConceptMap"];
+
+/// The StructureDefinitions, StructureMaps and ConceptMaps of a package: a folder (or its
+/// `package` subfolder), or `name@version`, installed from the package registry into the local
+/// package store when it is not there yet.
+fn package_resources(spec: &str) -> Result<Vec<Resource>> {
+    let path = Path::new(spec);
+    if path.is_dir() {
+        let inner = path.join("package");
+        let folder = if inner.is_dir() {
+            inner
+        } else {
+            path.to_path_buf()
+        };
+        return folder_resources(&folder);
+    }
+    let Some((name, version)) = spec.split_once('@') else {
+        return Err(format!("`{spec}` is neither a folder nor name@version").into());
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("cannot start the runtime: {e}"))?;
+    let resources = runtime.block_on(async {
+        let config = FcmConfig::load().await.map_err(|e| e.to_string())?;
+        let manager = CanonicalManager::new(config)
+            .await
+            .map_err(|e| e.to_string())?;
+        let installed = manager.list_packages().await.map_err(|e| e.to_string())?;
+        if !installed.iter().any(|p| p == spec) {
+            manager
+                .install_package(name, version)
+                .await
+                .map_err(|e| format!("cannot install {spec}: {e}"))?;
+        }
+        let storage = manager
+            .sqlite_storage_handle()
+            .ok_or_else(|| format!("{spec}: the package store cannot read resources"))?;
+        let mut resources = Vec::new();
+        for resource_type in PACKAGE_TYPES {
+            let found = manager
+                .find_by_type_and_package(resource_type, name)
+                .await
+                .map_err(|e| format!("{spec}: {e}"))?;
+            for index in found.iter().filter(|i| i.package_version == version) {
+                let resource = storage
+                    .get_resource(index)
+                    .await
+                    .map_err(|e| format!("{spec}: {}: {e}", index.canonical_url))?;
+                resources.push(Resource {
+                    origin: format!("{spec}: {}", index.canonical_url),
+                    json: resource.content,
+                });
+            }
+        }
+        Ok::<_, String>(resources)
+    })?;
+    Ok(resources)
+}
+
+/// The StructureDefinitions, StructureMaps and ConceptMaps among the JSON files of a folder.
+fn folder_resources(folder: &Path) -> Result<Vec<Resource>> {
+    let mut resources = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        let path = entry?.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path)?)
+        else {
+            continue;
+        };
+        if json["resourceType"]
+            .as_str()
+            .is_some_and(|t| PACKAGE_TYPES.contains(&t))
+        {
+            resources.push(Resource {
+                origin: path.display().to_string(),
+                json,
+            });
+        }
+    }
+    Ok(resources)
+}
+
 fn check(
     paths: &[PathBuf],
     output: OutputFormat,
-    definitions: Option<CoreDefinitions>,
+    definitions: Option<&dyn fml_check::Definitions>,
 ) -> Result<ExitCode> {
     let mut errors = 0;
     let mut files_checked = 0;
@@ -254,7 +399,7 @@ fn check(
         if let Some(definitions) = &definitions
             && !parse.has_errors()
         {
-            diagnostics.extend(fml_check::check(&parse.tree(), definitions));
+            diagnostics.extend(fml_check::check(&parse.tree(), *definitions));
         }
         for diagnostic in &diagnostics {
             if diagnostic.severity == Severity::Error {
@@ -332,6 +477,26 @@ fn print(path: &Path, output: Option<&Path>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Adds a StructureMap or ConceptMap (FHIR JSON) for imports and translate(); other resources
+/// are ignored.
+fn add_resource(
+    maps: &mut MapSet,
+    concept_maps: &mut ConceptMapSet,
+    json: serde_json::Value,
+    origin: &str,
+) -> Result<()> {
+    match json["resourceType"].as_str() {
+        Some("ConceptMap") => {
+            concept_maps.add(json);
+        }
+        Some("StructureMap") => maps.add(
+            fml_model::from_json(json).map_err(|e| format!("{origin}: not a StructureMap: {e}"))?,
+        ),
+        _ => {}
+    }
+    Ok(())
+}
+
 /// A StructureMap from FML or JSON.
 fn load_map(path: &Path) -> Result<fml_model::StructureMap> {
     let text = std::fs::read_to_string(path)?;
@@ -353,17 +518,35 @@ fn load_map(path: &Path) -> Result<fml_model::StructureMap> {
     Ok(compiled.map)
 }
 
+/// How `fml run` writes its result.
+struct RunOutput {
+    debug: bool,
+    bundle: bool,
+}
+
 fn run(
     map: &Path,
     input: &Path,
     output: Option<&Path>,
     release: Release,
     imports: &[PathBuf],
+    packages: &[String],
+    how: RunOutput,
 ) -> Result<ExitCode> {
+    let (definitions, package_resources) = definitions_with(release, packages)?;
     let structure_map = load_map(map)?;
     let source: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(input)?)
         .map_err(|e| format!("{}: not JSON: {e}", input.display()))?;
     let mut maps = MapSet::new();
+    let mut concept_maps = ConceptMapSet::new();
+    for resource in package_resources {
+        add_resource(
+            &mut maps,
+            &mut concept_maps,
+            resource.json,
+            &resource.origin,
+        )?;
+    }
     for path in imports {
         let candidates = if path.is_dir() {
             let mut found = files(std::slice::from_ref(path))?;
@@ -378,28 +561,78 @@ fn run(
             vec![path.clone()]
         };
         for candidate in candidates {
+            // JSON files may hold ConceptMaps for translate() as well as StructureMaps.
+            if candidate.extension().is_some_and(|e| e == "json") {
+                let json: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&candidate)?)
+                        .map_err(|e| format!("{}: not JSON: {e}", candidate.display()))?;
+                add_resource(
+                    &mut maps,
+                    &mut concept_maps,
+                    json,
+                    &candidate.display().to_string(),
+                )?;
+                continue;
+            }
             maps.add(load_map(&candidate)?);
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .map_err(|e| format!("cannot start the runtime: {e}"))?;
-    let definitions = CoreDefinitions::new(release);
-    let transformed = runtime.block_on(async {
+    let result = runtime.block_on(async {
         let expressions = FhirPathExpressions::new(release).await?;
-        Engine::new(&definitions, expressions)
-            .with_maps(&maps)
-            .transform(&structure_map, &source)
-            .await
-            .map_err(|e| e.to_string())
+        Ok::<_, String>(
+            Engine::new(&definitions, expressions)
+                .with_maps(&maps)
+                .with_concept_maps(&concept_maps)
+                .with_trace(how.debug)
+                .transform(&structure_map, &source)
+                .await,
+        )
     })?;
+    let transformed = match result {
+        Ok(transformed) => transformed,
+        Err(error) => {
+            if how.debug
+                && let Some(trace) = &error.trace
+            {
+                let parameters = debug_parameters(None, trace, Some(&error.message));
+                write_output(output, &(serde_json::to_string_pretty(&parameters)? + "\n"))?;
+            }
+            eprintln!("error: {error}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
     for message in &transformed.log {
         eprintln!("log: {message}");
     }
-    write_output(
-        output,
-        &(serde_json::to_string_pretty(&transformed.target)? + "\n"),
-    )?;
+    for warning in &transformed.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let mut result = transformed.target.clone();
+    if how.bundle {
+        let entries: Vec<serde_json::Value> = std::iter::once(&transformed.target)
+            .chain(&transformed.produced)
+            .map(|resource| serde_json::json!({ "resource": resource }))
+            .collect();
+        result = serde_json::json!({
+            "resourceType": "Bundle",
+            "type": "collection",
+            "entry": entries,
+        });
+    } else if !transformed.produced.is_empty() {
+        eprintln!(
+            "warning: the map produced {} more resource(s); use --bundle to write them too",
+            transformed.produced.len()
+        );
+    }
+    if how.debug
+        && let Some(trace) = &transformed.trace
+    {
+        result = debug_parameters(Some(&result), trace, None);
+    }
+    write_output(output, &(serde_json::to_string_pretty(&result)? + "\n"))?;
     Ok(ExitCode::SUCCESS)
 }
 
