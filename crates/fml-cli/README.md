@@ -7,6 +7,9 @@ check, format, compile, print and run FML maps. A single binary, no JVM.
 cargo install fml-cli
 ```
 
+Or download a binary for Linux, macOS or Windows from the
+[releases page](https://github.com/octofhir/fml-rs/releases).
+
 ```sh
 fml check maps/                    # syntax and type errors, rustc-style
 fml check --format json maps/      # the same for editors and CI

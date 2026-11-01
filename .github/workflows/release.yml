@@ -75,62 +75,15 @@ jobs:
           scripts/reference.sh
           cargo test -p fml-model --test reference -- --nocapture
           cargo test -p fml-engine --features fhirpath --test test_cases -- --nocapture
+          cargo test -p fml-engine --features fhirpath --test cross_version -- --nocapture
       - name: Package every crate
         run: cargo package --workspace --allow-dirty --locked
 
   binaries:
     needs: [version, check]
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            name: fml-linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            name: fml-linux-arm64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            name: fml-macos-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            name: fml-macos-x64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: fml-windows-x64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: Set version
-        shell: bash
-        run: scripts/set-version.sh "${{ needs.version.outputs.next }}"
-      - name: Build
-        run: cargo build --release --locked --package fml-cli --target ${{ matrix.target }}
-      - name: Archive (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          mkdir -p dist/${{ matrix.name }}
-          cp target/${{ matrix.target }}/release/fml README.md LICENSE-MIT LICENSE-APACHE dist/${{ matrix.name }}/
-          tar -C dist -czf dist/${{ matrix.name }}.tar.gz ${{ matrix.name }}
-      - name: Archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/${{ matrix.name }} | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/fml.exe, README.md, LICENSE-MIT, LICENSE-APACHE dist/${{ matrix.name }}/
-          Compress-Archive -Path dist/${{ matrix.name }} -DestinationPath dist/${{ matrix.name }}.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+    uses: ./.github/workflows/binaries.yml
+    with:
+      version: ${{ needs.version.outputs.next }}
 
   publish:
     needs: [version, binaries]

@@ -41,6 +41,9 @@ Every number below is checked by a test in this repository against public data, 
 cargo install --git https://github.com/octofhir/fml-rs fml-cli
 ```
 
+Releases also carry ready-built `fml` binaries for Linux (x64, arm64), macOS (arm64, x64) and
+Windows (x64) on the [releases page](https://github.com/octofhir/fml-rs/releases).
+
 ## The `fml` command
 
 ```sh
