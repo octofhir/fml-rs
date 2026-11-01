@@ -186,21 +186,23 @@ impl<'a> Types<'a> {
 
     /// The element at `path` inside `structure`, following content references.
     fn element_at(&self, structure: &Structure, path: &[String]) -> Option<Element> {
-        let mut elements = structure.elements.clone();
-        let mut current: Option<Element> = None;
-        for segment in path {
-            let element = elements.get(segment)?.clone();
-            let element = match &element.content_reference {
-                Some((url, target)) => {
-                    let referenced = self.definitions.structure(url)?;
-                    self.element_at(&referenced, target)?
-                }
-                None => element,
-            };
-            elements = element.children.clone();
-            current = Some(element);
+        let (first, rest) = path.split_first()?;
+        let mut current = self.resolve_reference(structure.elements.get(first)?)?;
+        for segment in rest {
+            current = self.resolve_reference(current.children.get(segment)?)?;
         }
-        current
+        Some(current)
+    }
+
+    /// The element itself, or the element its content reference points to.
+    fn resolve_reference(&self, element: &Element) -> Option<Element> {
+        match &element.content_reference {
+            Some((url, target)) => {
+                let referenced = self.definitions.structure(url)?;
+                self.element_at(&referenced, target)
+            }
+            None => Some(element.clone()),
+        }
     }
 
     /// The type of an element: its backbone, the content it references, or its type. `chosen`

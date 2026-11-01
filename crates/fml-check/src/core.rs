@@ -107,17 +107,24 @@ impl Definitions for CoreDefinitions {
     }
 }
 
-fn convert(schema: &FhirSchema, url: &str) -> Structure {
+pub(crate) fn convert(schema: &FhirSchema, url: &str) -> Structure {
     let kind = match schema.kind.as_str() {
         "primitive-type" => Kind::PrimitiveType,
         "resource" => Kind::Resource,
         "logical" => Kind::Logical,
         _ => Kind::ComplexType,
     };
-    let base = schema
-        .base
-        .as_deref()
-        .map(|base| crate::definitions::type_url(base.rsplit('/').next().unwrap_or(base), url));
+    // The embedded core schemas name their base with the unversioned URL; inside a
+    // version-specific release it is the base of that release.
+    let base = schema.base.as_deref().map(|base| {
+        match (
+            crate::definitions::versioned_core(url),
+            base.strip_prefix("http://hl7.org/fhir/StructureDefinition/"),
+        ) {
+            (Some(_), Some(name)) => crate::definitions::type_url(name, url),
+            _ => base.to_owned(),
+        }
+    });
     Structure {
         url: url.split('|').next().unwrap_or(url).to_owned(),
         name: schema.name.clone(),
@@ -171,11 +178,13 @@ fn convert_element(
         types,
         choices,
         array: element.array.unwrap_or(false),
-        children: element
-            .elements
-            .as_ref()
-            .map(|children| convert_elements(children, url))
-            .unwrap_or_default(),
+        children: Arc::new(
+            element
+                .elements
+                .as_ref()
+                .map(|children| convert_elements(children, url))
+                .unwrap_or_default(),
+        ),
         content_reference,
         choice_of: element.choice_of.clone(),
         index: element.index,

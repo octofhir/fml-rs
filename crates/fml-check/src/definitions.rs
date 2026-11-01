@@ -66,8 +66,8 @@ pub struct Element {
     pub choices: Vec<String>,
     /// Repeats (`max` > 1).
     pub array: bool,
-    /// Inline child elements of a backbone element.
-    pub children: BTreeMap<String, Element>,
+    /// Inline child elements of a backbone element, shared so an element is cheap to copy.
+    pub children: Arc<BTreeMap<String, Element>>,
     /// A content reference to another element: structure URL and element path.
     pub content_reference: Option<(String, Vec<String>)>,
     /// For a concrete choice element (`valueString`), the choice it belongs to (`value`).
@@ -83,18 +83,28 @@ impl Element {
 }
 
 /// Canonical URL of type `code` as used inside the structure at `context_url`: type codes resolve
-/// in the same FHIR release as the structure that uses them.
+/// in the same FHIR release as the structure that uses them, so inside a version-specific core
+/// structure (`http://hl7.org/fhir/4.0/StructureDefinition/Patient`) `HumanName` is the 4.0 one.
+/// Anywhere else, profiles included, type codes are the core types.
 pub fn type_url(code: &str, context_url: &str) -> String {
     if code.contains("://") || code.starts_with("urn:") {
         return code.to_owned();
     }
-    let context_url = context_url.split('|').next().unwrap_or(context_url);
-    match context_url.rfind("/StructureDefinition/") {
-        Some(index) if context_url.starts_with("http://hl7.org/fhir/") => {
-            format!("{}/StructureDefinition/{code}", &context_url[..index])
-        }
-        _ => format!("http://hl7.org/fhir/StructureDefinition/{code}"),
+    match versioned_core(context_url) {
+        Some(prefix) => format!("{prefix}/StructureDefinition/{code}"),
+        None => format!("http://hl7.org/fhir/StructureDefinition/{code}"),
     }
+}
+
+/// `http://hl7.org/fhir/4.0` for a structure URL of a version-specific core release.
+pub fn versioned_core(url: &str) -> Option<&str> {
+    let url = url.split('|').next().unwrap_or(url);
+    let version = url
+        .strip_prefix("http://hl7.org/fhir/")?
+        .split_once("/StructureDefinition/")?
+        .0;
+    let is_version = !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.');
+    is_version.then(|| &url[.."http://hl7.org/fhir/".len() + version.len()])
 }
 
 /// FHIR primitive type codes that are also FHIRPath System types under another name.
@@ -114,4 +124,44 @@ pub fn same_primitive(a: &str, b: &str) -> bool {
         }
     };
     system(a) == system(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_codes_resolve_in_the_release_of_the_structure() {
+        let core = "http://hl7.org/fhir/StructureDefinition/HumanName";
+        assert_eq!(
+            type_url(
+                "HumanName",
+                "http://hl7.org/fhir/StructureDefinition/Patient"
+            ),
+            core
+        );
+        assert_eq!(
+            type_url(
+                "HumanName",
+                "http://hl7.org/fhir/4.0/StructureDefinition/Patient|4.0.1"
+            ),
+            "http://hl7.org/fhir/4.0/StructureDefinition/HumanName"
+        );
+        // Profiles in hl7.org/fhir packages use the core types.
+        assert_eq!(
+            type_url(
+                "HumanName",
+                "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient"
+            ),
+            core
+        );
+        assert_eq!(
+            type_url("HumanName", "http://example.org/StructureDefinition/P"),
+            core
+        );
+        assert_eq!(
+            type_url("http://example.org/T", core),
+            "http://example.org/T"
+        );
+    }
 }

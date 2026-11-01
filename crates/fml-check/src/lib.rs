@@ -30,10 +30,14 @@ mod check;
 #[cfg(feature = "fhirschema")]
 mod core;
 pub mod definitions;
+#[cfg(feature = "fhirschema")]
+mod package;
 pub mod types;
 
 pub use check::check;
 #[cfg(feature = "fhirschema")]
 pub use core::{CoreDefinitions, Release};
 pub use definitions::{Definitions, Element, Kind, NoDefinitions, Structure};
+#[cfg(feature = "fhirschema")]
+pub use package::PackageDefinitions;
 pub use types::{ElementRef, Lookup, Type, Types};

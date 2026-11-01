@@ -698,6 +698,12 @@ const TRANSFORMS: &[(&str, usize, Option<usize>)] = &[
     ("qty", 1, Some(4)),
     ("id", 2, Some(3)),
     ("cp", 1, Some(2)),
+    ("toDateTime", 1, Some(2)),
+    ("unixToDateTime", 1, Some(2)),
+    ("toDate", 1, Some(2)),
+    ("unixToDate", 1, Some(2)),
+    ("toTime", 1, Some(2)),
+    ("unixToTime", 1, Some(2)),
 ];
 
 /// Variables by name, in nested frames: group parameters, then one frame per rule.
