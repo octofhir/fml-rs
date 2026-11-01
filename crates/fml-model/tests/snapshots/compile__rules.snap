@@ -1,0 +1,320 @@
+---
+source: crates/fml-model/tests/compile.rs
+expression: "map_json(r#\"group G(source src, target tgt) extends Base <<type+>> {\n  // copy the value\n  src.value : string as v -> tgt.text = v;\n  src.a.b.c as x -> tgt.p.q = x \"deep-path\";\n  src.code 0..1 first default ('x') as c where (c.length() > 1) check ($this != '') log (c) -> tgt.code = c \"constraints\";\n  src -> tgt.extension as ext, ext.url = 'http://example.org', ext.value = create('Reference') as r share refs, r.reference = reference(src) \"creates\";\n  src.n as n -> tgt.n = (n + 1), tgt.m = evaluate(n, n * 2), tgt.k = 5, tgt.flag = true \"evaluates\";\n  src.name as sn -> tgt.name as tn then {\n    sn.family as f -> tn.family = f \"family\";\n  } \"names\";\n  src.contact as s -> tgt.contact as t then Contact(s, t, 'x') \"dependent\";\n  src.legacy default \"fallback\" as l -> tgt.legacy = l \"legacyDefault\";\n}\n\"#)"
+---
+{
+  "resourceType": "StructureMap",
+  "status": "draft",
+  "group": [
+    {
+      "name": "G",
+      "extends": "Base",
+      "typeMode": "type-and-types",
+      "input": [
+        {
+          "name": "src",
+          "mode": "source"
+        },
+        {
+          "name": "tgt",
+          "mode": "target"
+        }
+      ],
+      "rule": [
+        {
+          "name": "valueString",
+          "source": [
+            {
+              "context": "src",
+              "type": "string",
+              "element": "value",
+              "variable": "v"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "text",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueId": "v"
+                }
+              ]
+            }
+          ],
+          "documentation": "copy the value"
+        },
+        {
+          "name": "deeppath",
+          "source": [
+            {
+              "extension": [
+                {
+                  "url": "http://hl7.org/fhir/6.0/StructureDefinition/extension-StructureMap.group.rule.source.element",
+                  "valueString": "b"
+                },
+                {
+                  "url": "http://hl7.org/fhir/6.0/StructureDefinition/extension-StructureMap.group.rule.source.element",
+                  "valueString": "c"
+                }
+              ],
+              "context": "src",
+              "element": "a",
+              "variable": "x"
+            }
+          ],
+          "target": [
+            {
+              "extension": [
+                {
+                  "url": "http://hl7.org/fhir/6.0/StructureDefinition/extension-StructureMap.group.rule.target.element",
+                  "valueString": "q"
+                }
+              ],
+              "context": "tgt",
+              "element": "p",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueId": "x"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "constraints",
+          "source": [
+            {
+              "context": "src",
+              "min": 0,
+              "max": "1",
+              "defaultValue": "'x'",
+              "element": "code",
+              "listMode": "first",
+              "variable": "c",
+              "condition": "c.length() > 1",
+              "check": "$this != ''",
+              "logMessage": "c"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "code",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueId": "c"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "creates",
+          "source": [
+            {
+              "context": "src"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "extension",
+              "variable": "ext"
+            },
+            {
+              "context": "ext",
+              "element": "url",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueString": "http://example.org"
+                }
+              ]
+            },
+            {
+              "context": "ext",
+              "element": "value",
+              "variable": "r",
+              "listMode": [
+                "share"
+              ],
+              "listRuleId": "refs",
+              "transform": "create",
+              "parameter": [
+                {
+                  "valueString": "Reference"
+                }
+              ]
+            },
+            {
+              "context": "r",
+              "element": "reference",
+              "transform": "reference",
+              "parameter": [
+                {
+                  "valueId": "src"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "evaluates",
+          "source": [
+            {
+              "context": "src",
+              "element": "n",
+              "variable": "n"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "n",
+              "transform": "evaluate",
+              "parameter": [
+                {
+                  "valueString": "n + 1"
+                }
+              ]
+            },
+            {
+              "context": "tgt",
+              "element": "m",
+              "transform": "evaluate",
+              "parameter": [
+                {
+                  "valueId": "n"
+                },
+                {
+                  "valueString": "n * 2"
+                }
+              ]
+            },
+            {
+              "context": "tgt",
+              "element": "k",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueInteger": 5
+                }
+              ]
+            },
+            {
+              "context": "tgt",
+              "element": "flag",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueBoolean": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "names",
+          "source": [
+            {
+              "context": "src",
+              "element": "name",
+              "variable": "sn"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "name",
+              "variable": "tn"
+            }
+          ],
+          "rule": [
+            {
+              "name": "family",
+              "source": [
+                {
+                  "context": "sn",
+                  "element": "family",
+                  "variable": "f"
+                }
+              ],
+              "target": [
+                {
+                  "context": "tn",
+                  "element": "family",
+                  "transform": "copy",
+                  "parameter": [
+                    {
+                      "valueId": "f"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "dependent",
+          "source": [
+            {
+              "context": "src",
+              "element": "contact",
+              "variable": "s"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "contact",
+              "variable": "t"
+            }
+          ],
+          "dependent": [
+            {
+              "name": "Contact",
+              "parameter": [
+                {
+                  "valueId": "s"
+                },
+                {
+                  "valueId": "t"
+                },
+                {
+                  "valueString": "x"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "legacyDefault",
+          "source": [
+            {
+              "context": "src",
+              "defaultValue": "'fallback'",
+              "element": "legacy",
+              "variable": "l"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "legacy",
+              "transform": "copy",
+              "parameter": [
+                {
+                  "valueId": "l"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

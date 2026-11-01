@@ -1,0 +1,98 @@
+---
+source: crates/fml-model/tests/compile.rs
+expression: "map_json(r#\"/// status = 'active'\nconceptmap \"GenderMap\" {\n  prefix s = \"http://hl7.org/fhir/administrative-gender\"\n  prefix t = \"http://terminology.hl7.org/CodeSystem/v2-0001\"\n\n  unmapped for s = provided\n  s:male - t:M\n  s:female == t:F\n  s:\"other value\" <= t:O\n}\n\ngroup G(source src, target tgt) {\n  src.gender as v -> tgt.value = translate(v, '#GenderMap', 'code');\n}\n\"#)"
+---
+{
+  "resourceType": "StructureMap",
+  "contained": [
+    {
+      "resourceType": "ConceptMap",
+      "id": "GenderMap",
+      "status": "active",
+      "group": [
+        {
+          "source": "http://hl7.org/fhir/administrative-gender",
+          "target": "http://terminology.hl7.org/CodeSystem/v2-0001",
+          "element": [
+            {
+              "code": "male",
+              "target": [
+                {
+                  "code": "M",
+                  "relationship": "related-to"
+                }
+              ]
+            },
+            {
+              "code": "female",
+              "target": [
+                {
+                  "code": "F",
+                  "relationship": "equivalent"
+                }
+              ]
+            },
+            {
+              "code": "other value",
+              "target": [
+                {
+                  "code": "O",
+                  "relationship": "source-is-narrower-than-target"
+                }
+              ]
+            }
+          ],
+          "unmapped": {
+            "mode": "use-source-code"
+          }
+        }
+      ]
+    }
+  ],
+  "status": "active",
+  "group": [
+    {
+      "name": "G",
+      "input": [
+        {
+          "name": "src",
+          "mode": "source"
+        },
+        {
+          "name": "tgt",
+          "mode": "target"
+        }
+      ],
+      "rule": [
+        {
+          "name": "gender",
+          "source": [
+            {
+              "context": "src",
+              "element": "gender",
+              "variable": "v"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "value",
+              "transform": "translate",
+              "parameter": [
+                {
+                  "valueId": "v"
+                },
+                {
+                  "valueString": "#GenderMap"
+                },
+                {
+                  "valueString": "code"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

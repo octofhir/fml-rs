@@ -1,0 +1,115 @@
+---
+source: crates/fml-model/tests/compile.rs
+expression: "map_json(r#\"group G(source src, target tgt) {\n  src -> tgt : id, active, gender;\n  src -> tgt : birthDate, deceased \"Others\";\n}\n\"#)"
+---
+{
+  "resourceType": "StructureMap",
+  "status": "draft",
+  "group": [
+    {
+      "name": "G",
+      "input": [
+        {
+          "name": "src",
+          "mode": "source"
+        },
+        {
+          "name": "tgt",
+          "mode": "target"
+        }
+      ],
+      "rule": [
+        {
+          "name": "unnamedid",
+          "source": [
+            {
+              "context": "src",
+              "element": "id",
+              "variable": "vvv"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "id",
+              "variable": "vvv",
+              "transform": "create"
+            }
+          ]
+        },
+        {
+          "name": "unnamedactive",
+          "source": [
+            {
+              "context": "src",
+              "element": "active",
+              "variable": "vvv"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "active",
+              "variable": "vvv",
+              "transform": "create"
+            }
+          ]
+        },
+        {
+          "name": "unnamedgender",
+          "source": [
+            {
+              "context": "src",
+              "element": "gender",
+              "variable": "vvv"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "gender",
+              "variable": "vvv",
+              "transform": "create"
+            }
+          ]
+        },
+        {
+          "name": "OthersbirthDate",
+          "source": [
+            {
+              "context": "src",
+              "element": "birthDate",
+              "variable": "vvv"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "birthDate",
+              "variable": "vvv",
+              "transform": "create"
+            }
+          ]
+        },
+        {
+          "name": "Othersdeceased",
+          "source": [
+            {
+              "context": "src",
+              "element": "deceased",
+              "variable": "vvv"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "deceased",
+              "variable": "vvv",
+              "transform": "create"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

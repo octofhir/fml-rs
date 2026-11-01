@@ -1,0 +1,74 @@
+---
+source: crates/fml-model/tests/compile.rs
+expression: "map_json(r#\"/// url = 'http://example.org/StructureMap/Demo'\n/// name = 'Demo Map'\n/// title = 'Demo'\n/// status = 'active'\n/// experimental = true\n\n// source structure\nuses \"http://hl7.org/fhir/StructureDefinition/Patient\" alias Pat as source // trailing\nuses \"http://hl7.org/fhir/StructureDefinition/Basic\" as target\nimports \"http://example.org/StructureMap/*\"\nlet prefix = 'urn:uuid:';\n\n// The main group\ngroup Demo(source src : Pat, target tgt : Basic) <<types>> {\n  src.id -> tgt.id;\n}\n\"#)"
+---
+{
+  "resourceType": "StructureMap",
+  "id": "DemoMap",
+  "url": "http://example.org/StructureMap/Demo",
+  "name": "Demo Map",
+  "title": "Demo",
+  "status": "active",
+  "experimental": true,
+  "description": "Demo",
+  "structure": [
+    {
+      "url": "http://hl7.org/fhir/StructureDefinition/Patient",
+      "mode": "source",
+      "alias": "Pat",
+      "documentation": "source structure"
+    },
+    {
+      "url": "http://hl7.org/fhir/StructureDefinition/Basic",
+      "mode": "target"
+    }
+  ],
+  "import": [
+    "http://example.org/StructureMap/*"
+  ],
+  "const": [
+    {
+      "name": "prefix",
+      "value": "'urn:uuid:'"
+    }
+  ],
+  "group": [
+    {
+      "name": "Demo",
+      "typeMode": "types",
+      "documentation": "The main group",
+      "input": [
+        {
+          "name": "src",
+          "type": "Pat",
+          "mode": "source"
+        },
+        {
+          "name": "tgt",
+          "type": "Basic",
+          "mode": "target"
+        }
+      ],
+      "rule": [
+        {
+          "name": "id",
+          "source": [
+            {
+              "context": "src",
+              "element": "id",
+              "variable": "vvv"
+            }
+          ],
+          "target": [
+            {
+              "context": "tgt",
+              "element": "id",
+              "variable": "vvv",
+              "transform": "create"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
