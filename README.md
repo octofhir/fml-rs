@@ -7,112 +7,135 @@
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
 </p>
 
-> Early development. Nothing is published yet.
-
-## Status
-
-`fml-syntax`, `fml-model`, `fml-check`, `fml-engine` and the `fml` CLI work today:
-
-- lossless syntax tree: every byte of the input, comments included, is kept;
-- error-tolerant parser with precise diagnostics, so one mistake does not hide the rest of the file;
-- formatter that keeps every comment and verifies its output parses back to the same map;
-- grammar of the Mapping Language IG plus the forms used by maps written for R3–R5:
-  `map "url" = "name"`, unparenthesised `where`, embedded `conceptmap`, `<<type+>>` groups.
-
-`fml-model` compiles FML to a StructureMap the way the HL7 reference compiler
-(`StructureMapUtilities` in org.hl7.fhir.core) does: generated rule names, the `vvv` variables of
-the simple copy form, batch identity rules, embedded concept maps as contained ConceptMaps,
-documentation from comments, FHIRPath stored in canonical form. It also prints a StructureMap back
-as FML, including maps built by older IG Publisher versions.
-
-`fml-check` follows every rule with the types of its variables, against the FHIR R4, R4B, R5 and
-R6 definitions (including the version-specific `http://hl7.org/fhir/4.0/…` URLs of the
-cross-version maps), and reports elements that do not exist, type annotations that are not a type
-of the element, unknown variables, writes into source variables, unknown or abstract types in
-`create`, wrong transform arity, and calls to undeclared groups or with the wrong number of
-arguments. Untyped groups are checked with the types they are called with. Element paths inside
-FHIRPath (`where`, `check`, `log`, `default`, `(…)`, `evaluate`) are checked too, as warnings: a
-wrong path there gives an empty result rather than an error, as in
-`relationship.exists(code = 'parent')` on a CodeableConcept, which is never true. The cross-version maps
-check clean; elsewhere it finds real mistakes, such as the `tgt.identifer` typo in the FHIR test
-cases, a group in the R6 maps that uses a parameter it does not declare, or a condition there that
-reads `system` and `code` from a CodeableConcept instead of its codings.
-
-`fml-engine` runs a StructureMap over FHIR JSON the way the reference engine does: extended
-groups, source filters (type, `where`, `check`, `log`, list modes, defaults), targets that create
-or reuse elements (repeating elements, choice elements written as `valueReference`, `share`),
-dependent groups, default groups chosen by type for simple copies, imported maps, and the
-transforms `create`, `copy`, `evaluate`, `truncate`, `cast`, `append`, `translate` (contained
-ConceptMaps), `reference`, `pointer`, `uuid`, `cc`, `c`, `id`, `cp` and `qty`. A rule may also have
-several sources. FHIRPath comes through a small trait; the `fhirpath` feature uses
-[octofhir-fhirpath](https://github.com/octofhir/fhirpath-rs). It passes all JSON structure-mapping
-tests of the FHIR test cases (the CDA ones need XML, which is out of scope).
-
-All 1,643 public maps we test against parse without errors, formatting them is idempotent,
-FML → StructureMap → FML → StructureMap gives back the same StructureMap for every one of them,
-and the StructureMap is identical to the one the reference compiler builds (`scripts/reference.sh`
-runs it), except for two places where we keep what the map says: whitespace-only string arguments
-such as `append(a, ' ', b)`, which the reference JSON writer drops, and calendar durations such as
-`5 days`, which it rewrites as the quantity `5 'days'`. The corpus:
-the [cross-version maps](https://github.com/HL7/fhir-cross-version), the
-[R6 maps](https://github.com/brianpos/fhir-r6-maps), the Mapping Language IG examples and the
-[FHIR test cases](https://github.com/FHIR/fhir-test-cases). Run the same check locally with
-`scripts/fetch-corpus.sh && cargo test --test corpus -- --nocapture`.
-
-## Usage
+Use [FML](https://build.fhir.org/ig/HL7/mapping-language-ig/) maps from a single `fml` binary or
+as a library.
 
 ```sh
-cargo install --path crates/fml-cli
+$ fml check syntax.map
+error: `Basic` has no element `identifer`
+  --> syntax.map:14:25
+   |
+14 |   src.identifier -> tgt.identifer;
+   |                         ^^^^^^^^^
 
-fml check maps/                 # syntax and type errors, rustc-style; --format json for tools
-fml check --fhir r4 maps/       # unversioned core URLs mean R4 (default r5)
-fml fmt maps/                   # format in place
-fml fmt --check maps/           # list unformatted files, exit 1 (CI)
-cat map.fml | fml fmt -         # stdin to stdout
-fml compile map.fml -o map.json # FML → StructureMap JSON (--fhir r4 for the R4 form)
-fml print map.json              # StructureMap JSON → FML
-fml run map.fml input.json      # run a map; --maps dir/ for imported maps, --fhir r4
-fml parse map.fml               # print the syntax tree
+$ fml run Encounter4to5.fml encounter-r4.json --maps R4toR5/ --maps codes/
+{ "resourceType": "Encounter", "class": [{ "coding": [{ "code": "IMP", … }] }], … }
 ```
 
-As a library:
+## What it does, measured
+
+Every number below is checked by a test in this repository against public data, in CI.
+
+| | |
+|---|---|
+| **Parses real maps** | All 1,659 public maps we test against parse without errors: the HL7 [cross-version maps](https://github.com/HL7/fhir-cross-version), the [R6 maps](https://github.com/brianpos/fhir-r6-maps), the Mapping Language IG examples and the [FHIR test cases](https://github.com/FHIR/fhir-test-cases). |
+| **Compiles like the reference** | On all 1,659, the StructureMap JSON is identical to what the HL7 reference compiler (org.hl7.fhir.core, the one the IG Publisher and the validator use) builds, apart from two documented places where we keep what the map says. |
+| **Runs like the reference** | Passes every JSON structure-mapping test of the FHIR test cases (12 of 12, R4B and R5). |
+| **Converts FHIR versions** | With the HL7 cross-version maps, converts 2,863 of the 2,881 R4 specification examples that have a map to R5. |
+| **Finds mistakes** | Its type checker found a typo in the FHIR test cases, a group in the R6 maps that uses a parameter it never declares, and a condition there that can never be true. |
+| **Round-trips** | FML → StructureMap → FML → StructureMap gives back the same StructureMap for every map, and the formatter never changes a map's meaning or loses a comment. |
+
+## Install
+
+```sh
+cargo install --git https://github.com/octofhir/fml-rs fml-cli
+```
+
+## The `fml` command
+
+```sh
+fml check maps/                    # syntax and type errors, rustc-style
+fml check --format json maps/      # the same, for editors and CI
+fml fmt maps/                      # format in place
+fml fmt --check maps/              # list unformatted files, exit 1 (CI)
+fml compile map.fml -o map.json    # FML → StructureMap (--fhir r4 for the R4 form)
+fml print map.json                 # StructureMap (R4 or R5) → FML
+fml run map.fml input.json         # run a map over a FHIR resource
+fml run Patient4to5.fml patient.json --maps R4toR5/ --maps codes/
+                                   # with imported groups and ConceptMaps for translate()
+fml run map.fml in.json --debug    # the $transform debug trace, as Parameters
+fml run map.fml in.json --bundle   # the target and the resources the map produced
+fml check --package hl7.fhir.us.core@6.1.0 maps/
+                                   # with the profiles and extensions of a FHIR package
+```
+
+## The crates
+
+| Crate | |
+|---|---|
+| [`fml-syntax`](crates/fml-syntax) | Lossless syntax tree, error-tolerant parser, formatter that keeps comments. |
+| [`fml-model`](crates/fml-model) | StructureMap model; FML → StructureMap like the reference compiler; StructureMap → FML; R4 and R5 forms. |
+| [`fml-check`](crates/fml-check) | Type checker against FHIR R4, R4B, R5 and R6 definitions and FHIR packages: paths, types, variables, group calls, FHIRPath paths. |
+| [`fml-engine`](crates/fml-engine) | StructureMap engine over FHIR JSON, with FHIRPath, imported maps, ConceptMaps and a debug trace. |
+| [`fml-cli`](crates/fml-cli) | The `fml` binary. |
 
 ```rust
-let parse = fml_syntax::parse(source);
-for diagnostic in parse.diagnostics() {
-    eprintln!("{}", diagnostic.message);
-}
-for group in parse.tree().groups() {
-    for rule in group.rules() {
-        // sources, targets, transforms, dependent rules…
-    }
-}
-let formatted = fml_syntax::format(source, &Default::default())?;
-
 let compiled = fml_model::compile(source);       // StructureMap + diagnostics
-let json = serde_json::to_string_pretty(&compiled.map)?;
-let fml = fml_model::print(&compiled.map);       // back to FML
-
-let definitions = fml_check::CoreDefinitions::new(fml_check::Release::R5);
-let expressions = fml_engine::FhirPathExpressions::new(fml_check::Release::R5).await?;
+let diagnostics = fml_check::check(&fml_syntax::parse(source).tree(), &definitions);
 let output = fml_engine::Engine::new(&definitions, expressions)
+    .with_maps(&maps)
+    .with_concept_maps(&concept_maps)
     .transform(&compiled.map, &input)
     .await?;                                     // output.target is FHIR JSON
 ```
 
-## Plan
+## Details
 
-| Crate | Purpose |
-|---|---|
-| `fml-syntax` | Lexer, lossless syntax tree, error-tolerant parser, diagnostics, formatter |
-| `fml-model` | StructureMap model (R4, R5 and the Mapping Language IG), FML ⇄ StructureMap |
-| `fml-check` | Type checking against FHIR structure definitions: paths, types, variables, group calls |
-| `fml-engine` | StructureMap execution: groups, dependent rules, list modes, transforms, FHIRPath, tracing |
-| `fhir-convert` | FHIR version conversion built on the cross-version maps, with a loss report |
-| `fml-cli` | The `fml` binary: `fmt`, `check`, `compile`, `print`, `run`, `convert` |
+**Parser.** A hand-written parser over a lossless [rowan](https://github.com/rust-analyzer/rowan)
+tree: every byte of the input is kept, a syntax error becomes a diagnostic without stopping the
+parse, and positions come in bytes, lines and UTF-16 columns. Beyond the IG grammar it reads what
+real maps use: `map "url" = "name"`, unparenthesised `where`, embedded `conceptmap`, `<<type+>>`.
 
-The grammar follows the [FHIR Mapping Language IG](https://build.fhir.org/ig/HL7/mapping-language-ig/)
-and stays compatible with maps written for FHIR R4 and R5.
+**Compiler.** Follows `StructureMapUtilities` from org.hl7.fhir.core: generated rule names, the
+`vvv` variables of the simple copy form, batch identity rules, contained ConceptMaps, documentation
+from comments, and FHIRPath written exactly as the reference parser does. The two deliberate
+differences: whitespace-only string arguments (`append(a, ' ', b)`), which the reference JSON
+writer drops, and calendar durations (`5 days`), which it rewrites as `5 'days'`.
+`scripts/reference.sh` runs the reference compiler over the corpus to check this.
+
+**Type checker.** Follows each rule with the types of its variables, including untyped groups,
+checked with the types they are called with, and the version-specific URLs of the cross-version
+maps (`http://hl7.org/fhir/4.0/StructureDefinition/Patient`). It reports missing elements, wrong
+type annotations, unknown variables, writes into source variables, unknown or abstract types in
+`create`, wrong transform arity and wrong group calls, and checks the element paths inside
+FHIRPath as warnings. The cross-version maps check clean. Profiles, extensions and logical
+models come from FHIR packages: a folder, or `name@version` from the package registry.
+
+**Engine.** Groups and `extends`, source filters (type, `where`, `check`, `log`, list modes,
+`default`), targets that create or reuse elements (repeating, choice elements written as
+`valueReference`, `share`), dependent groups, default groups chosen by type, imported maps, rules
+with several sources, and the transforms `create`, `copy`, `evaluate`, `truncate`, `cast`,
+`append`, `translate`, `reference`, `pointer`, `uuid`, `cc`, `c`, `id`, `cp`, `qty`, `escape`,
+and the IG's date and time transforms (`toDateTime`, `toDate`, `toTime` with format patterns, and
+their `unixTo…` forms). FHIRPath comes through a small trait; the `fhirpath` feature uses
+[octofhir-fhirpath](https://github.com/octofhir/fhirpath-rs). `translate` picks targets as the
+reference engine does and finds ConceptMaps by URL, by `url|version` and by the canonical URLs
+they replace. Resources a map creates outside the target are returned as `produced`. With tracing
+on, the engine records the `enter` / `step` / `exit` events the IG proposes for
+`$transform?debug=true`, with the position in the StructureMap and the variables in scope.
+
+## Not yet
+
+- Releases to crates.io (the release workflow is ready).
+- XML, and with it CDA and the CDA test cases: the tools read and write FHIR JSON.
+- The `dateOp` transform, which the IG lists without defining, and time zone names (`z`) in
+  date formats.
+- WebAssembly, and a language server.
+
+Next: StructureMap `$transform` and version conversion in the
+[OctoFHIR](https://github.com/octofhir/server-rs) server.
+
+## Testing
+
+```sh
+cargo test                                         # unit and snapshot tests
+scripts/fetch-corpus.sh                            # the public maps and FHIR test cases
+cargo test --test corpus -- --nocapture            # parse, format, round-trip, type-check
+scripts/reference.sh                               # the HL7 reference compiler (needs Java)
+cargo test -p fml-model --test reference -- --nocapture
+cargo test -p fml-engine --features fhirpath --test test_cases -- --nocapture
+cargo test -p fml-engine --features fhirpath --test cross_version -- --nocapture
+```
 
 ## License
 

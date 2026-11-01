@@ -34,5 +34,6 @@ jobs:
       - run: scripts/fetch-corpus.sh
       - run: cargo test --test corpus -- --nocapture
       - run: cargo test -p fml-engine --features fhirpath --test test_cases -- --nocapture
+      - run: cargo test -p fml-engine --features fhirpath --test cross_version -- --nocapture
       - run: scripts/reference.sh
       - run: cargo test -p fml-model --test reference -- --nocapture
