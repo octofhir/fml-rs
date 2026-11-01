@@ -1,7 +1,11 @@
-# fml-rs
+<p align="center"><img src=".github/banner.png" alt="octo/fml — FHIR Mapping Language, checked before it runs" width="100%"></p>
 
-FHIR Mapping Language (FML) tooling in Rust: parser, formatter, checker and
-StructureMap engine, with a command-line tool `fml`.
+<p align="center"><b>The FHIR Mapping Language, in Rust: parse, format, type-check, compile and run FML maps. No JVM.</b></p>
+
+<p align="center">
+  <a href="https://github.com/octofhir/fml-rs/actions/workflows/ci.yml"><img src="https://github.com/octofhir/fml-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
+</p>
 
 > Early development. Nothing is published yet.
 
