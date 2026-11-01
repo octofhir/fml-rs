@@ -177,6 +177,8 @@ fn convert_element(
             .map(|children| convert_elements(children, url))
             .unwrap_or_default(),
         content_reference,
+        choice_of: element.choice_of.clone(),
+        index: element.index,
     }
 }
 

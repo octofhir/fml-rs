@@ -70,6 +70,10 @@ pub struct Element {
     pub children: BTreeMap<String, Element>,
     /// A content reference to another element: structure URL and element path.
     pub content_reference: Option<(String, Vec<String>)>,
+    /// For a concrete choice element (`valueString`), the choice it belongs to (`value`).
+    pub choice_of: Option<String>,
+    /// Position in the structure's element order, for writing elements in definition order.
+    pub index: Option<usize>,
 }
 
 impl Element {

@@ -2,14 +2,14 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use fml_syntax::ast::{
     self, AstNode, Expr, Invocation, ParameterMode, QualifiedName, TransformValue,
 };
 use fml_syntax::{Diagnostic, Severity, SyntaxKind, SyntaxNode, TextRange};
 
-use crate::definitions::{Definitions, Element, Kind, Structure, same_primitive, type_url};
+use crate::definitions::{Definitions, type_url};
+use crate::types::{Lookup, Type, Types};
 
 /// Checks a parsed map. Syntax errors are not repeated; see [`fml_syntax::Parse::diagnostics`].
 pub fn check(file: &ast::SourceFile, definitions: &dyn Definitions) -> Vec<Diagnostic> {
@@ -23,49 +23,6 @@ pub fn check(file: &ast::SourceFile, definitions: &dyn Definitions) -> Vec<Diagn
 /// How deep untyped groups are followed into the groups they call.
 const MAX_CALL_DEPTH: usize = 32;
 
-/// The type of a variable or element.
-#[derive(Debug, Clone)]
-enum Ty {
-    /// Not known: no definition, a choice without a type, an expression result.
-    Unknown,
-    /// A structure, or a backbone element inside it (the element path).
-    Node {
-        structure: Arc<Structure>,
-        path: Vec<String>,
-    },
-}
-
-impl Ty {
-    fn key(&self) -> String {
-        match self {
-            Ty::Unknown => "?".to_owned(),
-            Ty::Node { structure, path } => {
-                let mut key = structure.url.clone();
-                for segment in path {
-                    key.push('.');
-                    key.push_str(segment);
-                }
-                key
-            }
-        }
-    }
-
-    /// `Patient` or `Patient.contact`, for messages.
-    fn display(&self) -> String {
-        match self {
-            Ty::Unknown => "?".to_owned(),
-            Ty::Node { structure, path } => {
-                let mut name = structure.type_name.clone();
-                for segment in path {
-                    name.push('.');
-                    name.push_str(segment);
-                }
-                name
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Source,
@@ -74,20 +31,8 @@ enum Mode {
 
 #[derive(Debug, Clone)]
 struct Variable {
-    ty: Ty,
+    ty: Type,
     mode: Mode,
-}
-
-/// The result of looking up an element.
-enum Lookup {
-    Found {
-        element: Element,
-        /// The structure that defines the element, and the path to the element itself.
-        owner: Arc<Structure>,
-        path: Vec<String>,
-    },
-    Missing,
-    Unknown,
 }
 
 struct Checker<'a> {
@@ -104,6 +49,10 @@ struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
+    fn types(&self) -> Types<'a> {
+        Types::new(self.definitions)
+    }
+
     fn new(file: &'a ast::SourceFile, definitions: &'a dyn Definitions) -> Self {
         Self {
             file,
@@ -203,15 +152,15 @@ impl<'a> Checker<'a> {
 
     /// The declared type of a group parameter: a `uses` alias, the name of a used structure, or a
     /// core type name.
-    fn parameter_type(&mut self, parameter: &ast::Parameter) -> Option<Ty> {
+    fn parameter_type(&mut self, parameter: &ast::Parameter) -> Option<Type> {
         let annotation = parameter.type_annotation()?;
         let name = annotation.type_name()?;
         if let Some(url) = self.type_names.get(&name).cloned() {
-            return Some(self.structure_ty(&url));
+            return Some(self.types().structure(&url));
         }
         let url = type_url(&name, "http://hl7.org/fhir/StructureDefinition/");
         if let Some(structure) = self.definitions.structure(&url) {
-            return Some(Ty::Node {
+            return Some(Type::Node {
                 structure,
                 path: Vec::new(),
             });
@@ -219,24 +168,14 @@ impl<'a> Checker<'a> {
         if self.definitions.covers(&url) {
             self.error(annotation.syntax(), format!("unknown type `{name}`"));
         }
-        Some(Ty::Unknown)
-    }
-
-    fn structure_ty(&self, url: &str) -> Ty {
-        match self.definitions.structure(url) {
-            Some(structure) => Ty::Node {
-                structure,
-                path: Vec::new(),
-            },
-            None => Ty::Unknown,
-        }
+        Some(Type::Unknown)
     }
 
     // ---- Groups -----------------------------------------------------------------------------
 
     /// Checks a group with argument types: declared types, or for untyped parameters the types
     /// inferred at a call site (`None` when not known).
-    fn check_group(&mut self, group: &ast::Group, arguments: Vec<Option<Ty>>, depth: usize) {
+    fn check_group(&mut self, group: &ast::Group, arguments: Vec<Option<Type>>, depth: usize) {
         let name = group.name().unwrap_or_default();
         let parameters: Vec<ast::Parameter> = group.parameters().collect();
         let mut scope = Scope::default();
@@ -245,7 +184,7 @@ impl<'a> Checker<'a> {
                 scope.define(
                     constant_name,
                     Variable {
-                        ty: Ty::Unknown,
+                        ty: Type::Unknown,
                         mode: Mode::Source,
                     },
                 );
@@ -257,7 +196,7 @@ impl<'a> Checker<'a> {
             let declared = self.parameter_type(parameter);
             let ty = declared
                 .or_else(|| arguments.get(index).cloned().flatten())
-                .unwrap_or(Ty::Unknown);
+                .unwrap_or(Type::Unknown);
             key.push(ty.key());
             let mode = match parameter.mode() {
                 Some(ParameterMode::Target) => Mode::Target,
@@ -346,7 +285,7 @@ impl<'a> Checker<'a> {
                 continue;
             };
             for field in fields {
-                if let Lookup::Missing = self.lookup(&variable.ty, field) {
+                if let Lookup::Missing = self.types().lookup(&variable.ty, field) {
                     let message = format!("`{}` has no element `{field}`", variable.ty.display());
                     self.error(rule.syntax(), message);
                 }
@@ -355,7 +294,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_target(&mut self, target: &ast::Target, scope: &mut Scope) {
-        let mut ty = Ty::Unknown;
+        let mut ty = Type::Unknown;
         if let Some(path) = target.path() {
             let segments = path.segments();
             let context = &segments[0];
@@ -392,13 +331,18 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a transform; returns the type of the value it produces where that is known.
-    fn check_transform(&mut self, transform: &TransformValue, element: Ty, scope: &Scope) -> Ty {
+    fn check_transform(
+        &mut self,
+        transform: &TransformValue,
+        element: Type,
+        scope: &Scope,
+    ) -> Type {
         match transform {
             TransformValue::Name(name) => {
                 let segments = name.segments();
                 match scope.get(&segments[0]).cloned() {
                     Some(variable) if segments.len() == 1 => {
-                        if matches!(element, Ty::Unknown) {
+                        if matches!(element, Type::Unknown) {
                             variable.ty
                         } else {
                             element
@@ -424,7 +368,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_invocation(&mut self, invocation: &Invocation, element: Ty, scope: &Scope) -> Ty {
+    fn check_invocation(&mut self, invocation: &Invocation, element: Type, scope: &Scope) -> Type {
         let name = invocation.name().unwrap_or_default();
         let arguments: Vec<Expr> = invocation.arguments().collect();
         let Some(&(_, min, max)) = TRANSFORMS.iter().find(|(n, _, _)| *n == name) else {
@@ -463,12 +407,12 @@ impl<'a> Checker<'a> {
     }
 
     /// The type `create('Type')` makes, checked against the element it is assigned to.
-    fn created_type(&mut self, type_name: &str, element: &Ty, at: &Expr) -> Ty {
+    fn created_type(&mut self, type_name: &str, element: &Type, at: &Expr) -> Type {
         let url = match (self.type_names.get(type_name), element) {
             (Some(url), _) => url.clone(),
-            (None, Ty::Node { structure, .. }) => type_url(type_name, &structure.url),
+            (None, Type::Node { structure, .. }) => type_url(type_name, &structure.url),
             // The element's type, and so the FHIR release the created type belongs to, is unknown.
-            (None, Ty::Unknown) => return Ty::Unknown,
+            (None, Type::Unknown) => return Type::Unknown,
         };
         match self.definitions.structure(&url) {
             Some(structure) => {
@@ -478,7 +422,7 @@ impl<'a> Checker<'a> {
                         format!("`{type_name}` is abstract and cannot be created"),
                     );
                 }
-                Ty::Node {
+                Type::Node {
                     structure,
                     path: Vec::new(),
                 }
@@ -487,7 +431,7 @@ impl<'a> Checker<'a> {
                 if self.definitions.covers(&url) {
                     self.error(at.syntax(), format!("unknown type `{type_name}`"));
                 }
-                Ty::Unknown
+                Type::Unknown
             }
         }
     }
@@ -543,181 +487,43 @@ impl<'a> Checker<'a> {
     fn walk(
         &mut self,
         path: &QualifiedName,
-        mut ty: Ty,
+        mut ty: Type,
         annotation: Option<&str>,
         annotation_node: Option<&ast::TypeAnnotation>,
-    ) -> Ty {
+    ) -> Type {
         let segments = path.segments();
         for (index, segment) in segments.iter().enumerate().skip(1) {
             let last = index == segments.len() - 1;
             let segment = segment.trim_end_matches("[x]");
-            ty = match self.lookup(&ty, segment) {
-                Lookup::Unknown => return Ty::Unknown,
+            ty = match self.types().lookup(&ty, segment) {
+                Lookup::Unknown => return Type::Unknown,
                 Lookup::Missing => {
                     let message = format!("`{}` has no element `{segment}`", ty.display());
                     self.error_at(segment_range(path, index), message);
-                    return Ty::Unknown;
+                    return Type::Unknown;
                 }
-                Lookup::Found {
-                    element,
-                    owner,
-                    path: element_path,
-                } => {
+                Lookup::Found(found) => {
                     let chosen = if last { annotation } else { None };
                     if let (Some(chosen), Some(node)) = (chosen, annotation_node)
-                        && !element.types.is_empty()
-                        && !self.is_one_of(chosen, &element.types, &owner.url)
+                        && !found.element.types.is_empty()
+                        && !self
+                            .types()
+                            .is_one_of(chosen, &found.element.types, &found.owner.url)
                     {
                         self.error(
                             node.syntax(),
                             format!(
                                 "`{chosen}` is not a type of `{}.{segment}`; it is {}",
                                 ty.display(),
-                                element.types.join(", ")
+                                found.element.types.join(", ")
                             ),
                         );
                     }
-                    self.element_ty(&element, &owner, element_path, chosen)
+                    self.types().element_type(&found, chosen)
                 }
             };
         }
         ty
-    }
-
-    /// Whether `chosen` is one of `types`, or derives from one of them (`OperationOutcome` for an
-    /// element of type `Resource`).
-    fn is_one_of(&self, chosen: &str, types: &[String], context: &str) -> bool {
-        let matches = |name: &str| {
-            types
-                .iter()
-                .any(|t| same_primitive(t, name) || t == name || t.ends_with(&format!("/{name}")))
-        };
-        if matches(chosen) {
-            return true;
-        }
-        let mut url = type_url(chosen, context);
-        for _ in 0..16 {
-            let Some(structure) = self.definitions.structure(&url) else {
-                // Not a known structure: a type of another model, nothing to compare with.
-                return !self.definitions.covers(&url);
-            };
-            if matches(&structure.type_name) {
-                return true;
-            }
-            match &structure.base {
-                Some(base) => url = base.clone(),
-                None => return false,
-            }
-        }
-        true
-    }
-
-    fn lookup(&self, ty: &Ty, name: &str) -> Lookup {
-        let Ty::Node { structure, path } = ty else {
-            return Lookup::Unknown;
-        };
-        if path.is_empty() {
-            return self.lookup_in_structure(structure.clone(), name, 0);
-        }
-        let Some(node) = self.element_at(structure, path) else {
-            return Lookup::Unknown;
-        };
-        if let Some(element) = node.children.get(name) {
-            let mut element_path = path.clone();
-            element_path.push(name.to_owned());
-            return Lookup::Found {
-                element: element.clone(),
-                owner: structure.clone(),
-                path: element_path,
-            };
-        }
-        // Not declared inline: inherited from the backbone's own type (BackboneElement, Element).
-        match node.types.first() {
-            Some(code) => match self.definitions.structure(&type_url(code, &structure.url)) {
-                Some(base) => self.lookup_in_structure(base, name, 0),
-                None => Lookup::Unknown,
-            },
-            None => Lookup::Unknown,
-        }
-    }
-
-    fn lookup_in_structure(&self, structure: Arc<Structure>, name: &str, depth: usize) -> Lookup {
-        // A primitive's value: `string.value` in the StructureDefinition, not a separate element
-        // in schemas that store primitives as plain JSON values.
-        if structure.kind == Kind::PrimitiveType && name == "value" {
-            return Lookup::Found {
-                element: Element::default(),
-                owner: structure.clone(),
-                path: vec![name.to_owned()],
-            };
-        }
-        if let Some(element) = structure.elements.get(name) {
-            return Lookup::Found {
-                element: element.clone(),
-                owner: structure.clone(),
-                path: vec![name.to_owned()],
-            };
-        }
-        let Some(base) = &structure.base else {
-            return Lookup::Missing;
-        };
-        if depth > 16 {
-            return Lookup::Unknown;
-        }
-        match self.definitions.structure(base) {
-            Some(base) => self.lookup_in_structure(base, name, depth + 1),
-            None => Lookup::Unknown,
-        }
-    }
-
-    /// The element at `path` inside `structure`, following content references.
-    fn element_at(&self, structure: &Structure, path: &[String]) -> Option<Element> {
-        let mut elements = structure.elements.clone();
-        let mut current: Option<Element> = None;
-        for segment in path {
-            let element = elements.get(segment)?.clone();
-            let element = match &element.content_reference {
-                Some((url, target)) => {
-                    let referenced = self.definitions.structure(url)?;
-                    self.element_at(&referenced, target)?
-                }
-                None => element,
-            };
-            elements = element.children.clone();
-            current = Some(element);
-        }
-        current
-    }
-
-    /// The type of an element: its backbone, the content it references, or its (chosen) type.
-    fn element_ty(
-        &self,
-        element: &Element,
-        owner: &Arc<Structure>,
-        path: Vec<String>,
-        chosen: Option<&str>,
-    ) -> Ty {
-        if let Some((url, target)) = &element.content_reference {
-            return match self.definitions.structure(url) {
-                Some(structure) => Ty::Node {
-                    structure,
-                    path: target.clone(),
-                },
-                None => Ty::Unknown,
-            };
-        }
-        if !element.children.is_empty() {
-            return Ty::Node {
-                structure: owner.clone(),
-                path,
-            };
-        }
-        let code = match (chosen, element.types.as_slice()) {
-            (Some(chosen), _) => chosen.to_owned(),
-            (None, [single]) => single.clone(),
-            _ => return Ty::Unknown,
-        };
-        self.structure_ty(&type_url(&code, &owner.url))
     }
 }
 
