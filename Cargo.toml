@@ -13,3 +13,8 @@ repository = "https://github.com/octofhir/fml-rs"
 homepage = "https://github.com/octofhir/fml-rs"
 keywords = ["fhir", "fml", "structuremap", "healthcare", "mapping"]
 categories = ["parser-implementations", "development-tools"]
+
+# Tests run FHIRPath over thousands of resources (the cross-version conversion); optimise the
+# dependencies in debug builds too. The workspace's own crates stay unoptimised for debugging.
+[profile.dev.package."*"]
+opt-level = 2

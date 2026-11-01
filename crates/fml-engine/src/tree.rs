@@ -24,8 +24,9 @@ struct Node {
 
 #[derive(Debug, Clone)]
 enum Data {
-    /// A primitive value; `Null` until it is assigned.
-    Primitive(Value),
+    /// A primitive value (`Null` until it is assigned), and its element's `id` and `extension`,
+    /// which FHIR JSON writes as the `_name` sibling.
+    Primitive(Value, Vec<Property>),
     Complex(Vec<Property>),
 }
 
@@ -64,7 +65,7 @@ impl Tree {
     /// An empty node of a type: complex, or primitive when the type is a primitive.
     pub fn create(&mut self, ty: Type, type_name: Option<String>) -> NodeId {
         let data = if ty.is_primitive() {
-            Data::Primitive(Value::Null)
+            Data::Primitive(Value::Null, Vec::new())
         } else {
             Data::Complex(Vec::new())
         };
@@ -82,7 +83,7 @@ impl Tree {
             ty,
             type_name,
             resource: false,
-            data: Data::Primitive(value),
+            data: Data::Primitive(value, Vec::new()),
         })
     }
 
@@ -96,13 +97,13 @@ impl Tree {
     }
 
     pub fn is_primitive(&self, id: NodeId) -> bool {
-        matches!(self.nodes[id.0].data, Data::Primitive(_))
+        matches!(self.nodes[id.0].data, Data::Primitive(..))
     }
 
     /// The primitive value of a node, `None` for complex nodes.
     pub fn value(&self, id: NodeId) -> Option<&Value> {
         match &self.nodes[id.0].data {
-            Data::Primitive(value) => Some(value),
+            Data::Primitive(value, _) => Some(value),
             Data::Complex(_) => None,
         }
     }
@@ -120,6 +121,13 @@ impl Tree {
 
     /// Loads JSON as a node of type `ty`; nested elements get the types the definitions give.
     pub fn load(&mut self, json: &Value, ty: Type, types: &Types<'_>) -> NodeId {
+        // `resourceType` marks a resource, unless the type has an element of that name
+        // (ExampleScenario.instance.resourceType names the type of a resource it talks about).
+        let marks_resource = json.get("resourceType").is_some()
+            && !matches!(types.lookup(&ty, "resourceType"), Lookup::Found(_));
+        if !marks_resource && json.is_object() {
+            return self.load_object(json, ty, None, types);
+        }
         let ty = match (&ty, json.get("resourceType").and_then(Value::as_str)) {
             // A resource in a `Resource`-typed element, or a top-level input: its own type.
             (_, Some(resource_type)) if ty.fhir_type().as_deref() != Some(resource_type) => {
@@ -138,17 +146,59 @@ impl Tree {
             .get("resourceType")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let Value::Object(object) = json else {
+        if !json.is_object() {
             return self.primitive(json.clone(), ty, type_name);
+        }
+        self.load_object(json, ty, type_name, types)
+    }
+
+    /// Loads a JSON object; `resource_type` is set when it is a resource.
+    fn load_object(
+        &mut self,
+        json: &Value,
+        ty: Type,
+        resource_type: Option<String>,
+        types: &Types<'_>,
+    ) -> NodeId {
+        let Value::Object(object) = json else {
+            return self.primitive(json.clone(), ty, None);
         };
+        let is_resource = resource_type.is_some();
         let id = self.push(Node {
-            resource: type_name.is_some() || ty.is_resource(),
+            resource: is_resource || ty.is_resource(),
             ty: ty.clone(),
-            type_name,
+            type_name: resource_type,
             data: Data::Complex(Vec::new()),
         });
         for (key, value) in object {
-            if key == "resourceType" || key.starts_with('_') {
+            if (is_resource && key == "resourceType")
+                || (key.starts_with('_') && object.contains_key(&key[1..]))
+            {
+                continue;
+            }
+            // `_name` without `name`: a primitive that has only an id or extensions.
+            if let Some(base) = key.strip_prefix('_') {
+                let (slot, child_ty) = self.slot_for_key(&ty, base, types);
+                let elements: Vec<&Value> = match value {
+                    Value::Array(items) => items.iter().collect(),
+                    single => vec![single],
+                };
+                let children: Vec<NodeId> = elements
+                    .into_iter()
+                    .map(|element| {
+                        let child = self.primitive(Value::Null, child_ty.clone(), None);
+                        self.load_primitive_element(child, element, types);
+                        child
+                    })
+                    .collect();
+                let many = slot.many || value.is_array();
+                self.properties_mut(id).push(Property {
+                    name: slot.name,
+                    choice: slot.choice,
+                    many,
+                    index: slot.index,
+                    values: children,
+                });
                 continue;
             }
             let (slot, child_ty) = self.slot_for_key(&ty, key, types);
@@ -160,6 +210,16 @@ impl Tree {
             for item in values {
                 children.push(self.load(item, child_ty.clone(), types));
             }
+            // The primitives' `id` and `extension`, from the `_name` sibling.
+            if let Some(elements) = object.get(&format!("_{key}")) {
+                let elements: Vec<&Value> = match elements {
+                    Value::Array(items) => items.iter().collect(),
+                    single => vec![single],
+                };
+                for (&child, element) in children.iter().zip(elements) {
+                    self.load_primitive_element(child, element, types);
+                }
+            }
             let many = slot.many || value.is_array();
             self.properties_mut(id).push(Property {
                 name: slot.name,
@@ -170,6 +230,16 @@ impl Tree {
             });
         }
         id
+    }
+
+    /// Loads a primitive's `_name` object (`id`, `extension`) into the primitive node.
+    fn load_primitive_element(&mut self, primitive: NodeId, element: &Value, types: &Types<'_>) {
+        if !element.is_object() || !self.is_primitive(primitive) {
+            return;
+        }
+        let holder = self.load(element, self.ty(primitive).clone(), types);
+        let properties = std::mem::take(self.properties_mut(holder));
+        *self.properties_mut(primitive) = properties;
     }
 
     /// The element a JSON key holds: `valueString` is the choice `value` with type `string`.
@@ -218,21 +288,16 @@ impl Tree {
 
     // ---- Navigation -------------------------------------------------------------------------
 
+    /// The elements of a node; for a primitive, those of its element (`id`, `extension`).
     fn properties(&self, id: NodeId) -> &[Property] {
         match &self.nodes[id.0].data {
-            Data::Complex(properties) => properties,
-            Data::Primitive(_) => &[],
+            Data::Complex(properties) | Data::Primitive(_, properties) => properties,
         }
     }
 
     fn properties_mut(&mut self, id: NodeId) -> &mut Vec<Property> {
-        let node = &mut self.nodes[id.0];
-        if let Data::Primitive(_) = node.data {
-            node.data = Data::Complex(Vec::new());
-        }
-        match &mut node.data {
-            Data::Complex(properties) => properties,
-            Data::Primitive(_) => unreachable!(),
+        match &mut self.nodes[id.0].data {
+            Data::Complex(properties) | Data::Primitive(_, properties) => properties,
         }
     }
 
@@ -298,8 +363,8 @@ impl Tree {
         name: &str,
         types: &Types<'_>,
     ) -> Result<NodeId, String> {
-        if self.is_primitive(id) {
-            return Err(format!("cannot create `{name}` in a primitive value"));
+        if self.is_primitive(id) && name == "value" {
+            return Ok(id);
         }
         let slot = self.slot(id, name, types)?;
         if slot.choice {
@@ -331,6 +396,14 @@ impl Tree {
         value: NodeId,
         types: &Types<'_>,
     ) -> Result<(), String> {
+        // A primitive's `value` is the primitive itself.
+        if self.is_primitive(id) && name == "value" {
+            let assigned = self.value(value).cloned().unwrap_or(Value::Null);
+            if let Data::Primitive(current, _) = &mut self.nodes[id.0].data {
+                *current = assigned;
+            }
+            return Ok(());
+        }
         let slot = self.slot(id, name, types)?;
         if slot.choice && self.fhir_type(value).is_none() {
             return Err(format!(
@@ -377,21 +450,24 @@ impl Tree {
     /// A copy of the subtree at `id`.
     pub fn deep_copy(&mut self, id: NodeId) -> NodeId {
         let node = self.nodes[id.0].clone();
+        let copy_properties = |properties: Vec<Property>, tree: &mut Self| -> Vec<Property> {
+            properties
+                .into_iter()
+                .map(|property| Property {
+                    values: property
+                        .values
+                        .iter()
+                        .map(|&value| tree.deep_copy(value))
+                        .collect(),
+                    ..property
+                })
+                .collect()
+        };
         let data = match node.data {
-            Data::Primitive(value) => Data::Primitive(value),
-            Data::Complex(properties) => Data::Complex(
-                properties
-                    .into_iter()
-                    .map(|property| Property {
-                        values: property
-                            .values
-                            .iter()
-                            .map(|&value| self.deep_copy(value))
-                            .collect(),
-                        ..property
-                    })
-                    .collect(),
-            ),
+            Data::Primitive(value, properties) => {
+                Data::Primitive(value, copy_properties(properties, self))
+            }
+            Data::Complex(properties) => Data::Complex(copy_properties(properties, self)),
         };
         self.push(Node { data, ..node })
     }
@@ -412,13 +488,27 @@ impl Tree {
         self.set_property(id, name, value, types)
     }
 
+    /// The nodes reachable from `root`, `root` included.
+    pub fn reachable(&self, root: NodeId) -> std::collections::HashSet<NodeId> {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if seen.insert(node) {
+                for property in self.properties(node) {
+                    stack.extend(&property.values);
+                }
+            }
+        }
+        seen
+    }
+
     // ---- Output -----------------------------------------------------------------------------
 
     /// The node as FHIR JSON, elements in definition order.
     pub fn to_json(&self, id: NodeId) -> Value {
         let node = &self.nodes[id.0];
         match &node.data {
-            Data::Primitive(value) => value.clone(),
+            Data::Primitive(value, _) => value.clone(),
             Data::Complex(properties) => {
                 let mut object = Map::new();
                 if (node.resource || node.ty.is_resource())
@@ -426,37 +516,69 @@ impl Tree {
                 {
                     object.insert("resourceType".to_owned(), Value::String(name));
                 }
-                let mut ordered: Vec<&Property> = properties.iter().collect();
-                ordered.sort_by_key(|p| p.index.unwrap_or(usize::MAX));
-                for property in ordered {
-                    let values: Vec<(NodeId, Value)> = property
-                        .values
-                        .iter()
-                        .map(|&value| (value, self.to_json(value)))
-                        .filter(|(_, json)| !is_empty(json))
-                        .collect();
-                    if values.is_empty() {
-                        continue;
-                    }
-                    if property.choice {
-                        for (value, json) in values {
-                            let suffix = self
-                                .fhir_type(value)
-                                .map(|t| capitalize(&t))
-                                .unwrap_or_default();
-                            object.insert(format!("{}{suffix}", property.name), json);
-                        }
-                    } else if property.many {
-                        object.insert(
-                            property.name.clone(),
-                            Value::Array(values.into_iter().map(|(_, json)| json).collect()),
-                        );
-                    } else {
-                        let (_, json) = values.into_iter().last().expect("not empty");
-                        object.insert(property.name.clone(), json);
-                    }
-                }
+                self.write_properties(properties, &mut object);
                 Value::Object(object)
+            }
+        }
+    }
+
+    /// A primitive's `id` and `extension` as the `_name` object, if it has any.
+    fn primitive_element(&self, id: NodeId) -> Option<Value> {
+        match &self.nodes[id.0].data {
+            Data::Primitive(_, properties) if !properties.is_empty() => {
+                let mut object = Map::new();
+                self.write_properties(properties, &mut object);
+                (!object.is_empty()).then_some(Value::Object(object))
+            }
+            _ => None,
+        }
+    }
+
+    fn write_properties(&self, properties: &[Property], object: &mut Map<String, Value>) {
+        let mut ordered: Vec<&Property> = properties.iter().collect();
+        ordered.sort_by_key(|p| p.index.unwrap_or(usize::MAX));
+        for property in ordered {
+            let values: Vec<(NodeId, Value, Option<Value>)> = property
+                .values
+                .iter()
+                .map(|&value| (value, self.to_json(value), self.primitive_element(value)))
+                .filter(|(_, json, element)| !is_empty(json) || element.is_some())
+                .collect();
+            if values.is_empty() {
+                continue;
+            }
+            let mut put = |key: String, json: Value, element: Option<Value>| {
+                if !json.is_null() {
+                    object.insert(key.clone(), json);
+                }
+                if let Some(element) = element {
+                    object.insert(format!("_{key}"), element);
+                }
+            };
+            if property.choice {
+                for (value, json, element) in values {
+                    let suffix = self
+                        .fhir_type(value)
+                        .map(|t| capitalize(&t))
+                        .unwrap_or_default();
+                    put(format!("{}{suffix}", property.name), json, element);
+                }
+            } else if property.many {
+                let any_element = values.iter().any(|(_, _, e)| e.is_some());
+                let any_value = values.iter().any(|(_, json, _)| !json.is_null());
+                let (jsons, elements): (Vec<Value>, Vec<Value>) = values
+                    .into_iter()
+                    .map(|(_, json, element)| (json, element.unwrap_or(Value::Null)))
+                    .unzip();
+                if any_value {
+                    object.insert(property.name.clone(), Value::Array(jsons));
+                }
+                if any_element {
+                    object.insert(format!("_{}", property.name), Value::Array(elements));
+                }
+            } else {
+                let (_, json, element) = values.into_iter().last().expect("not empty");
+                put(property.name.clone(), json, element);
             }
         }
     }

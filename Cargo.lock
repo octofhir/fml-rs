@@ -796,6 +796,7 @@ dependencies = [
  "fml-syntax",
  "insta",
  "octofhir-fhirschema",
+ "serde_json",
 ]
 
 [[package]]
@@ -807,6 +808,7 @@ dependencies = [
  "fml-engine",
  "fml-model",
  "fml-syntax",
+ "octofhir-canonical-manager",
  "serde_json",
  "tokio",
 ]

@@ -82,6 +82,40 @@ pub fn bind_variables(expression: &str, variables: &HashSet<String>) -> String {
     out
 }
 
+/// The names in `expression` that can refer to the map's variables: those that start a path
+/// (`item` and `x` in `item.answer.where(x > 1)`) and `%name` constants.
+pub fn path_start_names(expression: &str) -> HashSet<String> {
+    let source = format!("let _ = {expression};");
+    let parse = parse(&source);
+    let Some(root) = parse
+        .tree()
+        .constants()
+        .next()
+        .and_then(|constant| constant.expression())
+    else {
+        return HashSet::new();
+    };
+    let names = root
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::NameRef && is_path_start(node))
+        .filter_map(|node| node.first_token())
+        .filter(|token| token.kind() == SyntaxKind::Ident)
+        .map(|token| token.text().to_owned());
+    // `%name` names a variable explicitly.
+    let constants = root
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::ExternalConstant)
+        .filter_map(|node| {
+            node.children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| t.kind() == SyntaxKind::Ident)
+                .map(|t| t.text().to_owned())
+        });
+    names.chain(constants).collect()
+}
+
 /// Whether a name starts a path, rather than following a `.`.
 fn is_path_start(name: &SyntaxNode) -> bool {
     match name.parent() {
@@ -112,5 +146,13 @@ mod tests {
             "answer.where(%item = 1).item"
         );
         assert_eq!(bind_variables("%item", &variables), "%item");
+    }
+
+    #[test]
+    fn finds_the_names_that_can_be_variables() {
+        let names = path_start_names("item.answer.where(x > 1) and %s1.substring(0) = y.z");
+        let mut names: Vec<_> = names.into_iter().collect();
+        names.sort();
+        assert_eq!(names, vec!["item", "s1", "x", "y"]);
     }
 }

@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use fml_check::definitions::type_url;
 use fml_check::{Definitions, Lookup, Type, Types};
@@ -21,9 +21,11 @@ use fml_model::model::{
 use fml_model::{SOURCE_ELEMENT_EXTENSION, TARGET_ELEMENT_EXTENSION};
 use serde_json::{Value, json};
 
-use crate::expressions::{Expressions, Item, bind_variables};
-use crate::transforms;
+use crate::expressions::{Expressions, Item, bind_variables, path_start_names};
+use crate::terminology::{ConceptMapResolver, NoConceptMaps, translate};
+use crate::trace::{Phase, Trace, TraceEvent, TraceStatus, TraceVariable};
 use crate::tree::{NodeId, Tree};
+use crate::{datetime, transforms};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -31,12 +33,15 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub message: String,
+    /// With tracing on, the events recorded up to the failure (status `stopped`).
+    pub trace: Option<Box<Trace>>,
 }
 
 impl Error {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            trace: None,
         }
     }
 
@@ -117,6 +122,14 @@ pub struct Transformed {
     pub target: Value,
     /// Messages from `log (…)` clauses.
     pub log: Vec<String>,
+    /// Values left out of the target, such as a code a ConceptMap does not know (the reference
+    /// engine leaves those unset too).
+    pub warnings: Vec<String>,
+    /// Resources the map created outside the target (`create('Observation') as obs` with no
+    /// target element) and did not put into it: the `produced` structures of the map.
+    pub produced: Vec<Value>,
+    /// The debug trace, when tracing is on ([`Engine::with_trace`]).
+    pub trace: Option<Trace>,
 }
 
 /// Runs StructureMaps.
@@ -124,6 +137,22 @@ pub struct Engine<'a, X> {
     definitions: &'a dyn Definitions,
     expressions: X,
     maps: &'a dyn MapResolver,
+    concept_maps: &'a dyn ConceptMapResolver,
+    trace: bool,
+    /// Group lookups, which look through every imported map: the maps do not change between
+    /// transforms, so each answer is computed once.
+    groups: Mutex<GroupCache>,
+}
+
+/// A target type with its FHIR type name.
+type TypedTarget = (Type, Option<String>);
+
+/// Cached group lookups, by map URL.
+#[derive(Default)]
+struct GroupCache {
+    by_name: HashMap<(String, String), Option<GroupRef>>,
+    by_types: HashMap<(String, String, String), Option<GroupRef>>,
+    default_target: HashMap<(String, String), Option<TypedTarget>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,7 +213,13 @@ impl GroupRef {
 struct Run {
     tree: Tree,
     log: Vec<String>,
+    warnings: Vec<String>,
     depth: usize,
+    /// Recorded events, when tracing.
+    trace: Option<Vec<TraceEvent>>,
+    trace_depth: usize,
+    /// Resources created outside the target.
+    produced: Vec<NodeId>,
     /// Evaluated `let` constants, by map URL and name.
     constants: HashMap<(String, String), Vec<NodeId>>,
 }
@@ -198,7 +233,26 @@ impl<'a, X: Expressions> Engine<'a, X> {
             definitions,
             expressions,
             maps: &NoMaps,
+            concept_maps: &NoConceptMaps,
+            trace: false,
+            groups: Mutex::new(GroupCache::default()),
         }
+    }
+
+    fn cache(&self) -> std::sync::MutexGuard<'_, GroupCache> {
+        self.groups.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Records a debug trace of each transform: see [`Trace`].
+    pub fn with_trace(mut self, trace: bool) -> Self {
+        self.trace = trace;
+        self
+    }
+
+    /// Where `translate` finds ConceptMaps that are not contained in the map.
+    pub fn with_concept_maps(mut self, concept_maps: &'a dyn ConceptMapResolver) -> Self {
+        self.concept_maps = concept_maps;
+        self
     }
 
     /// Where the maps named in `imports` come from.
@@ -244,7 +298,10 @@ impl<'a, X: Expressions> Engine<'a, X> {
         let target_input =
             input("target").ok_or_else(|| Error::new("the first group has no target"))?;
 
-        let mut run = Run::default();
+        let mut run = Run {
+            trace: self.trace.then(Vec::new),
+            ..Run::default()
+        };
         let types = self.types();
         let source_type = self.input_type(&map, source_input.type_name.as_deref());
         let source_node = run.tree.load(source, source_type, &types);
@@ -268,10 +325,31 @@ impl<'a, X: Expressions> Engine<'a, X> {
             map: map.clone(),
             index: 0,
         };
-        self.execute_group(&mut run, entry, vars, true).await?;
+        if let Err(mut error) = self.execute_group(&mut run, entry, vars, true).await {
+            error.trace = run.trace.take().map(|events| {
+                Box::new(Trace {
+                    status: TraceStatus::Stopped,
+                    events,
+                })
+            });
+            return Err(error);
+        }
+        let in_target = run.tree.reachable(target_node);
+        let produced = run
+            .produced
+            .iter()
+            .filter(|node| !in_target.contains(node))
+            .map(|&node| run.tree.to_json(node))
+            .collect();
         Ok(Transformed {
             target: run.tree.to_json(target_node),
             log: run.log,
+            warnings: run.warnings,
+            produced,
+            trace: run.trace.map(|events| Trace {
+                status: TraceStatus::Complete,
+                events,
+            }),
         })
     }
 
@@ -312,15 +390,19 @@ impl<'a, X: Expressions> Engine<'a, X> {
             }
             let map = group.map.clone();
             let definition = group.group();
+            let position = format!("StructureMap.group[{}]", group.index);
+            self.record(run, Phase::Enter, &map, &position, &vars, Vec::new());
             if let Some(extends) = &definition.extends {
                 let base = self.group_by_name(&map, extends)?;
                 self.execute_group(run, base, vars.clone(), false).await?;
             }
             let mut vars = vars;
-            for rule in &definition.rule {
-                self.execute_rule(run, &group, rule, &mut vars, at_root)
+            for (index, rule) in definition.rule.iter().enumerate() {
+                let rule_position = format!("{position}.rule[{index}]");
+                self.execute_rule(run, &group, rule, &rule_position, &mut vars, at_root)
                     .await?;
             }
+            self.record(run, Phase::Exit, &map, &position, &vars, Vec::new());
             run.depth -= 1;
             Ok(())
         })
@@ -328,8 +410,27 @@ impl<'a, X: Expressions> Engine<'a, X> {
 
     /// The group `name`, in the map or the maps it imports.
     fn group_by_name(&self, map: &Arc<StructureMap>, name: &str) -> Result<GroupRef> {
+        let key = (map.url.clone().unwrap_or_default(), name.to_owned());
+        let cached = self.cache().by_name.get(&key).cloned();
+        let found = match cached {
+            Some(found) => found,
+            None => {
+                let found = self.find_group_by_name(map, name);
+                self.cache().by_name.insert(key, found.clone());
+                found
+            }
+        };
+        found.ok_or_else(|| {
+            Error::new(format!(
+                "no group `{name}` in {} or the maps it imports",
+                map.url.as_deref().unwrap_or("the map")
+            ))
+        })
+    }
+
+    fn find_group_by_name(&self, map: &Arc<StructureMap>, name: &str) -> Option<GroupRef> {
         if let Some(index) = map.group.iter().position(|g| g.name == name) {
-            return Ok(GroupRef {
+            return Some(GroupRef {
                 map: map.clone(),
                 index,
             });
@@ -340,17 +441,14 @@ impl<'a, X: Expressions> Engine<'a, X> {
                     continue;
                 }
                 if let Some(index) = imported.group.iter().position(|g| g.name == name) {
-                    return Ok(GroupRef {
+                    return Some(GroupRef {
                         map: imported.clone(),
                         index,
                     });
                 }
             }
         }
-        Err(Error::new(format!(
-            "no group `{name}` in {} or the maps it imports",
-            map.url.as_deref().unwrap_or("the map")
-        )))
+        None
     }
 
     /// The default group for a source and target type: one with a type mode whose parameter
@@ -362,6 +460,25 @@ impl<'a, X: Expressions> Engine<'a, X> {
         target: Option<&str>,
     ) -> Option<GroupRef> {
         let (source, target) = (source?, target?);
+        let key = (
+            map.url.clone().unwrap_or_default(),
+            source.to_owned(),
+            target.to_owned(),
+        );
+        if let Some(found) = self.cache().by_types.get(&key) {
+            return found.clone();
+        }
+        let found = self.find_group_by_types(map, source, target);
+        self.cache().by_types.insert(key, found.clone());
+        found
+    }
+
+    fn find_group_by_types(
+        &self,
+        map: &Arc<StructureMap>,
+        source: &str,
+        target: &str,
+    ) -> Option<GroupRef> {
         let matching = |candidate: &Arc<StructureMap>| {
             candidate.group.iter().position(|group| {
                 group.type_mode.is_some()
@@ -411,12 +528,15 @@ impl<'a, X: Expressions> Engine<'a, X> {
         run: &'r mut Run,
         group: &'r GroupRef,
         rule: &'r Rule,
+        position: &'r str,
         vars: &'r mut Vars,
         at_root: bool,
     ) -> BoxFuture<'r, Result<()>> {
         Box::pin(async move {
+            self.record(run, Phase::Enter, &group.map, position, vars, Vec::new());
             let mut bindings = vec![vars.clone()];
-            for source in &rule.source {
+            for (index, source) in rule.source.iter().enumerate() {
+                let logged = run.log.len();
                 let mut next = Vec::new();
                 for binding in &bindings {
                     next.extend(
@@ -425,13 +545,19 @@ impl<'a, X: Expressions> Engine<'a, X> {
                     );
                 }
                 bindings = next;
+                if run.trace.is_some() {
+                    let messages = run.log[logged..].to_vec();
+                    let shown = bindings.first().cloned().unwrap_or_else(|| vars.clone());
+                    let step = format!("{position}.source[{index}]");
+                    self.record(run, Phase::Step, &group.map, &step, &shown, messages);
+                }
             }
             let source_variable = match rule.source.as_slice() {
                 [single] => single.variable.as_deref(),
                 _ => None,
             };
             for mut binding in bindings {
-                for target in &rule.target {
+                for (index, target) in rule.target.iter().enumerate() {
                     self.process_target(
                         run,
                         group,
@@ -443,10 +569,15 @@ impl<'a, X: Expressions> Engine<'a, X> {
                         at_root,
                     )
                     .await?;
+                    if run.trace.is_some() {
+                        let step = format!("{position}.target[{index}]");
+                        self.record(run, Phase::Step, &group.map, &step, &binding, Vec::new());
+                    }
                 }
                 if !rule.rule.is_empty() {
-                    for child in &rule.rule {
-                        self.execute_rule(run, group, child, &mut binding, false)
+                    for (index, child) in rule.rule.iter().enumerate() {
+                        let child_position = format!("{position}.rule[{index}]");
+                        self.execute_rule(run, group, child, &child_position, &mut binding, false)
                             .await?;
                     }
                 } else if !rule.dependent.is_empty() {
@@ -459,8 +590,59 @@ impl<'a, X: Expressions> Engine<'a, X> {
                         .await?;
                 }
             }
+            self.record(run, Phase::Exit, &group.map, position, vars, Vec::new());
             Ok(())
         })
+    }
+
+    /// Records a trace event, when tracing.
+    fn record(
+        &self,
+        run: &mut Run,
+        phase: Phase,
+        map: &StructureMap,
+        position: &str,
+        vars: &Vars,
+        messages: Vec<String>,
+    ) {
+        if run.trace.is_none() {
+            return;
+        }
+        if phase == Phase::Exit {
+            run.trace_depth = run.trace_depth.saturating_sub(1);
+        }
+        let mut seen = HashSet::new();
+        let mut variables: Vec<TraceVariable> = vars
+            .entries
+            .iter()
+            .rev()
+            .filter(|(mode, name, _)| *mode != Mode::Shared && seen.insert(name.clone()))
+            .map(|(mode, name, node)| TraceVariable {
+                name: name.clone(),
+                context_type: match mode {
+                    Mode::Input => "input",
+                    _ => "output",
+                }
+                .to_owned(),
+                value: run.tree.to_json(*node),
+                data_type: self.item(run, *node).type_name,
+            })
+            .collect();
+        variables.reverse();
+        let event = TraceEvent {
+            phase,
+            depth: run.trace_depth,
+            source: map.url.clone(),
+            position: position.to_owned(),
+            variables,
+            messages,
+        };
+        if let Some(events) = &mut run.trace {
+            events.push(event);
+        }
+        if phase == Phase::Enter {
+            run.trace_depth += 1;
+        }
     }
 
     /// `src.a as s -> tgt.a as t` with nothing else to do: the default group for the two types
@@ -764,10 +946,15 @@ impl<'a, X: Expressions> Engine<'a, X> {
                         (ty, Some(name))
                     }
                     None => self
-                        .implied_type(run, destination, element, source_variable, vars)
+                        .implied_type(run, group, destination, element, source_variable, vars)
                         .map_err(fail)?,
                 };
-                Ok(Some(run.tree.create(ty.0, ty.1)))
+                let created = run.tree.create(ty.0, ty.1);
+                // A resource created outside any target element is one the map produces.
+                if destination.is_none() && run.tree.ty(created).is_resource() {
+                    run.produced.push(created);
+                }
+                Ok(Some(created))
             }
             "copy" => {
                 let parameter = parameters
@@ -814,7 +1001,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
                     self.argument_text(run, group, parameters, 1, vars).await?
                 } else {
                     // Without a type, the value takes the type of the element it is written to.
-                    self.implied_type(run, destination, element, None, vars)
+                    self.implied_type(run, group, destination, element, None, vars)
                         .ok()
                         .and_then(|(_, name)| name)
                         .ok_or_else(|| fail("cast needs a type: cast(value, 'type')".into()))?
@@ -834,10 +1021,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
                 }
                 Ok(Some(self.string(run, text, "string")))
             }
-            "translate" => self
-                .translate(run, group, rule, parameters, vars)
-                .await
-                .map(Some),
+            "translate" => self.translate(run, group, rule, parameters, vars).await,
             "reference" | "pointer" => {
                 let parameter = parameters
                     .first()
@@ -876,6 +1060,54 @@ impl<'a, X: Expressions> Engine<'a, X> {
                 uuid::Uuid::new_v4().to_string(),
                 "id",
             ))),
+            "toDateTime" | "toDate" | "toTime" => {
+                let text = self.argument_text(run, group, parameters, 0, vars).await?;
+                let format = match parameters.get(1) {
+                    Some(_) => Some(self.argument_text(run, group, parameters, 1, vars).await?),
+                    None => None,
+                };
+                let (value, type_name) = match transform {
+                    "toDateTime" => (datetime::to_date_time(&text, format.as_deref()), "dateTime"),
+                    "toDate" => (datetime::to_date(&text, format.as_deref()), "date"),
+                    _ => (datetime::to_time(&text, format.as_deref()), "time"),
+                };
+                Ok(Some(self.string(run, value.map_err(fail)?, type_name)))
+            }
+            "unixToDateTime" | "unixToDate" | "unixToTime" => {
+                let text = self.argument_text(run, group, parameters, 0, vars).await?;
+                let seconds: i64 = text
+                    .trim()
+                    .parse()
+                    .map_err(|_| fail(format!("`{text}` is not a Unix timestamp in seconds")))?;
+                let timezone = match parameters.get(1) {
+                    Some(_) => Some(self.argument_text(run, group, parameters, 1, vars).await?),
+                    None => None,
+                };
+                let (value, type_name) = match transform {
+                    "unixToDateTime" => (
+                        datetime::unix_to_date_time(seconds, timezone.as_deref()),
+                        "dateTime",
+                    ),
+                    "unixToDate" => (datetime::unix_to_date(seconds, timezone.as_deref()), "date"),
+                    _ => (datetime::unix_to_time(seconds, timezone.as_deref()), "time"),
+                };
+                Ok(Some(self.string(run, value.map_err(fail)?, type_name)))
+            }
+            "escape" => {
+                let text = self.argument_text(run, group, parameters, 0, vars).await?;
+                let (from, to) = match parameters.len() {
+                    3 => (
+                        self.argument_text(run, group, parameters, 1, vars).await?,
+                        self.argument_text(run, group, parameters, 2, vars).await?,
+                    ),
+                    _ => (
+                        "none".to_owned(),
+                        self.argument_text(run, group, parameters, 1, vars).await?,
+                    ),
+                };
+                let escaped = datetime::escape(&text, &from, &to).map_err(fail)?;
+                Ok(Some(self.string(run, escaped, "string")))
+            }
             "cc" | "c" | "id" | "cp" | "qty" => {
                 let mut arguments = Vec::with_capacity(parameters.len());
                 for index in 0..parameters.len() {
@@ -912,6 +1144,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
     fn implied_type(
         &self,
         run: &Run,
+        group: &GroupRef,
         destination: Option<NodeId>,
         element: Option<&str>,
         source_variable: Option<&str>,
@@ -927,12 +1160,70 @@ impl<'a, X: Expressions> Engine<'a, X> {
             return Ok((types.element_type(&found, None), Some(single.clone())));
         }
         if let Some(source) = source_variable.and_then(|s| vars.get(Mode::Input, s)) {
+            // The type the default group for the source's type produces, as the reference engine
+            // does: a contained R4 Medication becomes the R5 Medication its group maps to.
+            if let Some(source_type) = run.tree.fhir_type(source)
+                && let Some(produced) = self.default_target_type(group, &source_type)
+            {
+                return Ok(produced);
+            }
             return Ok((run.tree.ty(source).clone(), run.tree.fhir_type(source)));
         }
         Err("cannot tell what type to create: name it, as in create('Type')".into())
     }
 
-    /// `translate(value, map, output)` with a ConceptMap contained in the map (`'#id'`).
+    /// The target type of the `<<type+>>` group whose source is `source_type`, in the map or the
+    /// maps it imports.
+    fn default_target_type(&self, group: &GroupRef, source_type: &str) -> Option<TypedTarget> {
+        let key = (
+            group.map.url.clone().unwrap_or_default(),
+            source_type.to_owned(),
+        );
+        if let Some(found) = self.cache().default_target.get(&key) {
+            return found.clone();
+        }
+        let found = self.find_default_target_type(group, source_type);
+        self.cache().default_target.insert(key, found.clone());
+        found
+    }
+
+    fn find_default_target_type(&self, group: &GroupRef, source_type: &str) -> Option<TypedTarget> {
+        let target_of = |map: &Arc<StructureMap>| {
+            map.group.iter().find_map(|candidate| {
+                if candidate.type_mode.as_deref() != Some("type-and-types") {
+                    return None;
+                }
+                let [source, target] = candidate.input.as_slice() else {
+                    return None;
+                };
+                if source.mode != "source"
+                    || target.mode != "target"
+                    || !self.stated_type_is(map, source.type_name.as_deref(), source_type)
+                {
+                    return None;
+                }
+                let stated = target.type_name.as_deref()?;
+                let ty = self
+                    .types()
+                    .structure(&self.type_name_url(map, stated, CORE));
+                let name = ty.fhir_type().unwrap_or_else(|| stated.to_owned());
+                Some((ty, Some(name)))
+            })
+        };
+        if let Some(found) = target_of(&group.map) {
+            return Some(found);
+        }
+        group.map.import.iter().find_map(|import| {
+            self.maps
+                .resolve(import)
+                .iter()
+                .filter(|imported| imported.url != group.map.url)
+                .find_map(target_of)
+        })
+    }
+
+    /// `translate(value, map, output)`: a code, Coding or CodeableConcept translated with a
+    /// ConceptMap contained in the map (`'#id'`) or found by the ConceptMap resolver.
     async fn translate(
         &self,
         run: &mut Run,
@@ -940,57 +1231,70 @@ impl<'a, X: Expressions> Engine<'a, X> {
         rule: &Rule,
         parameters: &[Parameter],
         vars: &Vars,
-    ) -> Result<NodeId> {
+    ) -> Result<Option<NodeId>> {
         let fail = |message: String| Error::in_rule(rule, message);
-        let code = self.argument_text(run, group, parameters, 0, vars).await?;
+        let source = self
+            .parameter_node(
+                run,
+                group,
+                parameters
+                    .first()
+                    .ok_or_else(|| fail("translate needs a value".into()))?,
+                vars,
+            )
+            .await?;
         let map_url = self.argument_text(run, group, parameters, 1, vars).await?;
         let output = self.argument_text(run, group, parameters, 2, vars).await?;
-        let Some(id) = map_url.strip_prefix('#') else {
-            return Err(fail(format!(
-                "translate with `{map_url}` needs a terminology service; only contained ConceptMaps (`#id`) are supported"
-            )));
+        let concept_map = match map_url.strip_prefix('#') {
+            Some(id) => group
+                .map
+                .contained
+                .iter()
+                .find(|r| r["resourceType"] == "ConceptMap" && r["id"] == id)
+                .cloned()
+                .map(Arc::new)
+                .ok_or_else(|| fail(format!("no contained ConceptMap `{id}`")))?,
+            None => self
+                .concept_maps
+                .resolve(&map_url)
+                .ok_or_else(|| fail(format!("ConceptMap `{map_url}` not found")))?,
         };
-        let concept_map = group
-            .map
-            .contained
-            .iter()
-            .find(|r| r["resourceType"] == "ConceptMap" && r["id"] == id)
-            .ok_or_else(|| fail(format!("no contained ConceptMap `{id}`")))?;
-        let mut found = None;
-        for map_group in concept_map["group"].as_array().into_iter().flatten() {
-            for element in map_group["element"].as_array().into_iter().flatten() {
-                if element["code"].as_str() == Some(code.as_str())
-                    && let Some(target) = element["target"].as_array().and_then(|t| t.first())
-                {
-                    found = Some((map_group["target"].clone(), target.clone()));
-                }
-            }
-            if found.is_none() && map_group["unmapped"]["mode"] == "use-source-code" {
-                found = Some((map_group["target"].clone(), json!({ "code": code })));
-            }
-            if found.is_some() {
+        let codes = self.codes_of(run, source);
+        let mut translation = None;
+        for (system, code) in &codes {
+            if let Some(found) = translate(&concept_map, system.as_deref(), code)
+                .map_err(|e| fail(format!("{e} in `{map_url}`")))?
+            {
+                translation = Some(found);
                 break;
             }
         }
-        let (system, target) =
-            found.ok_or_else(|| fail(format!("`{code}` has no translation in `{id}`")))?;
-        let target_code = target["code"].clone();
+        let Some(translation) = translation else {
+            let shown: Vec<&str> = codes.iter().map(|(_, c)| c.as_str()).collect();
+            let rule_name = rule.name.as_deref().unwrap_or("?");
+            run.warnings.push(format!(
+                "rule `{rule_name}`: `{}` has no translation in `{map_url}`; left out",
+                shown.join(", ")
+            ));
+            return Ok(None);
+        };
+
         let types = self.types();
         let mut coding = serde_json::Map::new();
-        if let Value::String(system) = &system {
+        if let Some(system) = &translation.system {
             coding.insert("system".into(), system.clone().into());
         }
-        coding.insert("code".into(), target_code.clone());
-        if let Some(display) = target.get("display") {
-            coding.insert("display".into(), display.clone());
+        if let Some(code) = &translation.code {
+            coding.insert("code".into(), code.clone().into());
         }
+        if let Some(display) = &translation.display {
+            coding.insert("display".into(), display.clone().into());
+        }
+        let text = |value: &Option<String>| value.clone().map_or(Value::Null, Value::String);
         let (json, type_name) = match output.as_str() {
-            "code" => (target_code, "code"),
-            "system" => (system, "uri"),
-            "display" => (
-                target.get("display").cloned().unwrap_or(Value::Null),
-                "string",
-            ),
+            "code" => (text(&translation.code), "code"),
+            "system" => (text(&translation.system), "uri"),
+            "display" => (text(&translation.display), "string"),
             "Coding" => (Value::Object(coding), "Coding"),
             "CodeableConcept" => (
                 json!({ "coding": [Value::Object(coding)] }),
@@ -999,11 +1303,39 @@ impl<'a, X: Expressions> Engine<'a, X> {
             other => return Err(fail(format!("unknown translate output `{other}`"))),
         };
         let ty = types.structure(&type_url(type_name, CORE));
-        Ok(if json.is_object() {
+        Ok(Some(if json.is_object() {
             run.tree.load(&json, ty, &types)
         } else {
             run.tree.primitive(json, ty, Some(type_name.to_owned()))
-        })
+        }))
+    }
+
+    /// The (system, code) pairs a value holds: a code, a Coding, or a CodeableConcept's codings.
+    fn codes_of(&self, run: &Run, node: NodeId) -> Vec<(Option<String>, String)> {
+        let text = |id: NodeId, name: &str| {
+            run.tree
+                .children(id, name)
+                .first()
+                .and_then(|&child| run.tree.text(child))
+        };
+        if run.tree.is_primitive(node) {
+            return run
+                .tree
+                .text(node)
+                .map(|code| (None, code))
+                .into_iter()
+                .collect();
+        }
+        let codings = run.tree.children(node, "coding");
+        let codings = if codings.is_empty() {
+            vec![node]
+        } else {
+            codings
+        };
+        codings
+            .into_iter()
+            .filter_map(|coding| Some((text(coding, "system"), text(coding, "code")?)))
+            .collect()
     }
 
     // ---- Parameters -------------------------------------------------------------------------
@@ -1131,7 +1463,14 @@ impl<'a, X: Expressions> Engine<'a, X> {
         vars: &'r Vars,
     ) -> BoxFuture<'r, Result<Vec<NodeId>>> {
         Box::pin(async move {
-            let mut names: HashSet<String> = vars.names().map(str::to_owned).collect();
+            // Only the variables the expression names: serializing every variable in scope for
+            // every expression would copy the whole input each time.
+            let referenced = path_start_names(expression);
+            let mut names: HashSet<String> = vars
+                .names()
+                .filter(|name| referenced.contains(*name))
+                .map(str::to_owned)
+                .collect();
             let mut variables = Vec::new();
             for name in &names {
                 if let Some(node) = vars.value(name) {
@@ -1142,7 +1481,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
                 if names.contains(&constant.name) || expression == constant.value {
                     continue;
                 }
-                if expression.contains(constant.name.as_str()) {
+                if referenced.contains(&constant.name) {
                     let values = self.constant(run, group, &constant.name).await?;
                     if let [value] = values.as_slice() {
                         variables.push((constant.name.clone(), self.item(run, *value)));

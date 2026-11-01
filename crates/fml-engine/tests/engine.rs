@@ -241,3 +241,123 @@ async fn reports_errors_with_the_rule() {
         .unwrap_err();
     assert!(error.contains("needs FHIRPath"), "{error}");
 }
+
+#[tokio::test]
+async fn date_time_and_escape_transforms() {
+    let map = format!(
+        r#"{HEADER}
+group Main(source src : Patient, target tgt : Basic) {{
+  src.id as v -> tgt.created = toDate(v, 'dd/MM/yyyy') "date";
+  src.id as v -> tgt.extension as e, e.url = 'http://example.org/when', e.value = unixToDateTime(1714570200, '+10:00') "unix";
+  src.id as v -> tgt.extension as e, e.url = 'http://example.org/text', e.value = escape('a < b', 'none', 'html') "escaped";
+}}
+"#
+    );
+    assert_eq!(
+        run(
+            &map,
+            json!({ "resourceType": "Patient", "id": "02/03/1980" })
+        )
+        .await
+        .unwrap(),
+        json!({
+            "resourceType": "Basic",
+            "extension": [
+                { "url": "http://example.org/when", "valueDateTime": "2024-05-01T23:30:00+10:00" },
+                { "url": "http://example.org/text", "valueString": "a &lt; b" }
+            ],
+            "created": "1980-03-02"
+        })
+    );
+}
+
+#[tokio::test]
+async fn resources_created_outside_the_target_are_produced() {
+    let compiled = fml_model::compile(&format!(
+        r#"{HEADER}
+group Main(source src : Patient, target tgt : Basic) {{
+  src.id as v -> create('Observation') as obs, obs.status = 'final', obs.id = v, tgt.id = v "split";
+  src.id as v -> create('Condition') as kept, tgt.extension as e, e.url = 'http://example.org/c' "notProduced";
+}}
+"#
+    ));
+    assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
+    let definitions = CoreDefinitions::new(Release::R5);
+    let result = Engine::new(&definitions, NoExpressions)
+        .transform(
+            &compiled.map,
+            &json!({ "resourceType": "Patient", "id": "p1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.target,
+        json!({
+            "resourceType": "Basic",
+            "id": "p1",
+            "extension": [{ "url": "http://example.org/c" }]
+        })
+    );
+    // Both are produced: neither was put into the target (the Condition stays empty).
+    assert_eq!(
+        result.produced,
+        vec![
+            json!({ "resourceType": "Observation", "id": "p1", "status": "final" }),
+            json!({ "resourceType": "Condition" })
+        ]
+    );
+}
+
+#[tokio::test]
+async fn traces_follow_the_stack_rules() {
+    use fml_engine::{Phase, TraceStatus};
+    let compiled = fml_model::compile(&format!(
+        "{HEADER}\ngroup Main(source src : Patient, target tgt : Basic) {{\n  src.name as n -> tgt.extension as e then Name(n, e) \"names\";\n}}\ngroup Name(source n, target e) {{\n  n.family as f -> e.url = f \"family\";\n}}\n"
+    ));
+    let definitions = CoreDefinitions::new(Release::R5);
+    let engine = Engine::new(&definitions, NoExpressions).with_trace(true);
+    let source =
+        json!({ "resourceType": "Patient", "name": [{ "family": "A" }, { "family": "B" }] });
+    let trace = engine
+        .transform(&compiled.map, &source)
+        .await
+        .unwrap()
+        .trace
+        .unwrap();
+    assert_eq!(trace.status, TraceStatus::Complete);
+    // Every enter has a matching exit at the same depth; steps are one deeper than their scope.
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    for event in &trace.events {
+        match event.phase {
+            Phase::Enter => {
+                assert_eq!(event.depth, stack.len());
+                stack.push((event.depth, event.position.clone()));
+            }
+            Phase::Step => assert_eq!(event.depth, stack.len()),
+            Phase::Exit => {
+                let (depth, position) = stack.pop().expect("an exit without an enter");
+                assert_eq!((event.depth, &event.position), (depth, &position));
+            }
+        }
+    }
+    assert!(stack.is_empty());
+    assert_eq!(
+        trace.events.first().unwrap().position,
+        "StructureMap.group[0]"
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|e| e.position == "StructureMap.group[1].rule[0].target[0]")
+    );
+
+    // On an error the trace stops where evaluation stopped, without closing open scopes.
+    let broken = fml_model::compile(&format!(
+        "{HEADER}\ngroup Main(source src : Patient, target tgt : Basic) {{\n  src.name as n -> tgt.nope = n \"bad\";\n}}\n"
+    ));
+    let error = engine.transform(&broken.map, &source).await.unwrap_err();
+    let trace = error.trace.unwrap();
+    assert_eq!(trace.status, TraceStatus::Stopped);
+    assert_eq!(trace.events.last().unwrap().phase, Phase::Step);
+}

@@ -603,6 +603,12 @@ const TRANSFORMS: &[&str] = &[
     "qty",
     "id",
     "cp",
+    "toDateTime",
+    "unixToDateTime",
+    "toDate",
+    "unixToDate",
+    "toTime",
+    "unixToTime",
 ];
 
 struct ConceptMapGroup {
