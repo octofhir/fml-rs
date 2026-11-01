@@ -33,5 +33,6 @@ jobs:
           java-version: "21"
       - run: scripts/fetch-corpus.sh
       - run: cargo test --test corpus -- --nocapture
+      - run: cargo test -p fml-engine --features fhirpath --test test_cases -- --nocapture
       - run: scripts/reference.sh
       - run: cargo test -p fml-model --test reference -- --nocapture

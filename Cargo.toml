@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.88"
 authors = ["OctoFHIR Team"]
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 repository = "https://github.com/octofhir/fml-rs"
 homepage = "https://github.com/octofhir/fml-rs"
 keywords = ["fhir", "fml", "structuremap", "healthcare", "mapping"]

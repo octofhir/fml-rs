@@ -1,0 +1,186 @@
+name: Release
+
+# Bumps the workspace version, checks everything, builds the `fml` binaries, publishes every crate
+# to crates.io, then commits the version, tags it and creates the GitHub release with the binaries.
+# Publishing comes before the tag and the release, so a failed publish leaves nothing to clean up.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: Version bump (none releases the current version)
+        required: true
+        default: patch
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.version.outputs.current }}
+      next: ${{ steps.version.outputs.next }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        run: |
+          current=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          IFS=. read -r major minor patch <<< "$current"
+          case "${{ inputs.version_bump }}" in
+            none) next="$current" ;;
+            patch) next="$major.$minor.$((patch + 1))" ;;
+            minor) next="$major.$((minor + 1)).0" ;;
+            major) next="$((major + 1)).0.0" ;;
+          esac
+          if git ls-remote --exit-code --tags origin "refs/tags/v$next" > /dev/null; then
+            echo "::error::v$next is already released"
+            exit 1
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Releasing $next (from $current)"
+
+  check:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: Swatinem/rust-cache@v2
+      - name: Set version
+        run: scripts/set-version.sh "${{ needs.version.outputs.next }}"
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - name: Corpus, reference compiler and FHIR test cases
+        run: |
+          scripts/fetch-corpus.sh
+          cargo test --all-features --test corpus -- --nocapture
+          scripts/reference.sh
+          cargo test -p fml-model --test reference -- --nocapture
+          cargo test -p fml-engine --features fhirpath --test test_cases -- --nocapture
+      - name: Package every crate
+        run: cargo package --workspace --allow-dirty --locked
+
+  binaries:
+    needs: [version, check]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: fml-linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: fml-linux-arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: fml-macos-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: fml-macos-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: fml-windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Set version
+        shell: bash
+        run: scripts/set-version.sh "${{ needs.version.outputs.next }}"
+      - name: Build
+        run: cargo build --release --locked --package fml-cli --target ${{ matrix.target }}
+      - name: Archive (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist/${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/fml README.md LICENSE-MIT LICENSE-APACHE dist/${{ matrix.name }}/
+          tar -C dist -czf dist/${{ matrix.name }}.tar.gz ${{ matrix.name }}
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/${{ matrix.name }} | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/fml.exe, README.md, LICENSE-MIT, LICENSE-APACHE dist/${{ matrix.name }}/
+          Compress-Archive -Path dist/${{ matrix.name }} -DestinationPath dist/${{ matrix.name }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish:
+    needs: [version, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Set version
+        run: scripts/set-version.sh "${{ needs.version.outputs.next }}"
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --allow-dirty --locked
+      - name: Commit the version and tag it
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git commit -am "Release ${{ needs.version.outputs.next }}"
+          fi
+          git tag "v${{ needs.version.outputs.next }}"
+          git push origin HEAD:main "v${{ needs.version.outputs.next }}"
+      - name: Release notes
+        run: |
+          previous=$(git describe --tags --abbrev=0 "v${{ needs.version.outputs.next }}^" 2>/dev/null || true)
+          range=${previous:+$previous..}HEAD
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --pretty='- %s' $range | grep -v '^- Release '
+            echo
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "cargo install fml-cli --version ${{ needs.version.outputs.next }}"
+            echo '```'
+            echo
+            echo "Or download a binary below. Crates: fml-syntax, fml-model, fml-check, fml-engine, fml-cli."
+          } > notes.md
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ needs.version.outputs.next }}" dist/* \
+            --title "fml ${{ needs.version.outputs.next }}" \
+            --notes-file notes.md
