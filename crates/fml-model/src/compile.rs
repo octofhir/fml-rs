@@ -16,8 +16,8 @@ use fml_syntax::{
 use serde_json::{Map, Value, json};
 
 use crate::model::{
-    Constant, Dependent, Extension, Group, Input, Parameter, Rule, Source, Structure, StructureMap,
-    Target,
+    Constant, Dependent, Extension, Group, Input, Parameter, ParameterValue, Rule, Source,
+    Structure, StructureMap, Target,
 };
 
 /// Extension holding source path segments after the first element (`src.a.b` → `b`).
@@ -26,6 +26,9 @@ pub const SOURCE_ELEMENT_EXTENSION: &str =
 /// Extension holding target path segments after the first element.
 pub const TARGET_ELEMENT_EXTENSION: &str =
     "http://hl7.org/fhir/6.0/StructureDefinition/extension-StructureMap.group.rule.target.element";
+/// Extension on a parameter value that refers to a contained resource.
+pub const REFERENCES_CONTAINED_EXTENSION: &str =
+    "http://hl7.org/fhir/StructureDefinition/referencesContained";
 /// The variable the simple copy form `src.a -> tgt.a;` binds on both sides.
 pub const AUTO_VARIABLE: &str = "vvv";
 /// Name prefix of the rules produced by an unnamed batch identity rule `src -> tgt : a, b;`.
@@ -336,7 +339,7 @@ impl Compiler {
                     name: invocation.name().unwrap_or_default(),
                     parameter: invocation
                         .arguments()
-                        .map(|argument| self.parameter(&argument, false))
+                        .map(|argument| self.parameter(&argument, false).into())
                         .collect(),
                     other: Map::new(),
                 });
@@ -483,17 +486,19 @@ impl Compiler {
         match node.transform() {
             Some(TransformValue::Literal(literal)) => {
                 target.transform = Some("copy".to_owned());
-                target.parameter.push(literal_parameter(&literal));
+                target.parameter.push(literal_parameter(&literal).into());
             }
             Some(TransformValue::Name(name)) => {
                 target.transform = Some("copy".to_owned());
-                target.parameter.push(Parameter::Id(name.text()));
+                target
+                    .parameter
+                    .push(ParameterValue::Id(name.text()).into());
             }
             Some(TransformValue::Expression(expression)) => {
                 target.transform = Some("evaluate".to_owned());
                 target
                     .parameter
-                    .push(Parameter::String(canonical(&expression)));
+                    .push(ParameterValue::String(canonical(&expression)).into());
             }
             Some(TransformValue::Invocation(invocation)) => {
                 let name = invocation.name().unwrap_or_default();
@@ -504,8 +509,24 @@ impl Compiler {
                 target.parameter = invocation
                     .arguments()
                     .enumerate()
-                    .map(|(index, argument)| self.parameter(&argument, evaluate && index == 1))
+                    .map(|(index, argument)| {
+                        Parameter::from(self.parameter(&argument, evaluate && index == 1))
+                    })
                     .collect();
+                // `translate(v, '#id', …)` names a contained ConceptMap; the reference compiler
+                // records that with an extension on the value.
+                if name == "translate"
+                    && let Some(parameter) = target.parameter.get_mut(1)
+                    && let ParameterValue::String(map) = &parameter.value
+                    && map.starts_with('#')
+                {
+                    parameter.value_element = Some(json!({
+                        "extension": [{
+                            "url": REFERENCES_CONTAINED_EXTENSION,
+                            "valueReference": { "reference": map },
+                        }],
+                    }));
+                }
                 target.transform = Some(name);
             }
             None => {}
@@ -522,19 +543,19 @@ impl Compiler {
 
     /// A transform or dependent-group argument: a variable, a constant, or (for the expression
     /// argument of `evaluate`) FHIRPath text.
-    fn parameter(&mut self, argument: &Expr, expression: bool) -> Parameter {
+    fn parameter(&mut self, argument: &Expr, expression: bool) -> ParameterValue {
         if expression {
-            return Parameter::String(canonical(argument));
+            return ParameterValue::String(canonical(argument));
         }
         let node = argument.syntax();
         match node.kind() {
             SyntaxKind::NameRef => {
                 let token = node.first_token().expect("a name has a token");
-                Parameter::Id(ast::name_text(&token))
+                ParameterValue::Id(ast::name_text(&token))
             }
             SyntaxKind::Literal => match ast::Literal::cast(node.clone()) {
                 Some(literal) => literal_parameter(&literal),
-                None => Parameter::String(canonical(argument)),
+                None => ParameterValue::String(canonical(argument)),
             },
             SyntaxKind::PrefixExpr
                 if node
@@ -543,9 +564,9 @@ impl Compiler {
             {
                 let text: String = canonical(argument).split_whitespace().collect();
                 if let Ok(value) = text.parse::<i64>() {
-                    Parameter::Integer(value)
+                    ParameterValue::Integer(value)
                 } else if let Ok(value) = text.parse::<serde_json::Number>() {
-                    Parameter::Decimal(value)
+                    ParameterValue::Decimal(value)
                 } else {
                     self.complex_parameter(argument)
                 }
@@ -554,12 +575,12 @@ impl Compiler {
         }
     }
 
-    fn complex_parameter(&mut self, argument: &Expr) -> Parameter {
+    fn complex_parameter(&mut self, argument: &Expr) -> ParameterValue {
         self.error(
             argument.syntax(),
             "a transform argument must be a variable or a constant; use `evaluate` for expressions",
         );
-        Parameter::String(canonical(argument))
+        ParameterValue::String(canonical(argument))
     }
 }
 
@@ -656,30 +677,32 @@ pub fn source_path(source: &Source) -> String {
         .join(".")
 }
 
-/// The FHIRPath text StructureMap stores: canonical spacing, without redundant outer parentheses.
+/// The FHIRPath text StructureMap stores; see [`crate::canonical`].
 fn canonical(expression: &Expr) -> String {
-    expression.unparenthesized().canonical_text()
+    crate::canonical::canonical(expression)
 }
 
-fn literal_parameter(literal: &ast::Literal) -> Parameter {
+fn literal_parameter(literal: &ast::Literal) -> ParameterValue {
     let value = literal.value().unwrap_or_default();
     match literal.kind() {
         Some(SyntaxKind::Integer | SyntaxKind::LongNumber) => value
             .trim_end_matches('L')
             .parse()
-            .map(Parameter::Integer)
-            .unwrap_or(Parameter::String(value)),
+            .map(ParameterValue::Integer)
+            .unwrap_or(ParameterValue::String(value)),
         Some(SyntaxKind::Decimal) => value
             .parse()
-            .map(Parameter::Decimal)
-            .unwrap_or(Parameter::String(value)),
-        Some(SyntaxKind::Date) => Parameter::Date(value.trim_start_matches('@').to_owned()),
-        Some(SyntaxKind::DateTime) => Parameter::DateTime(value.trim_start_matches('@').to_owned()),
-        Some(SyntaxKind::Time) => Parameter::Time(value.trim_start_matches("@T").to_owned()),
-        Some(SyntaxKind::Ident) if value == "true" || value == "false" => {
-            Parameter::Boolean(value == "true")
+            .map(ParameterValue::Decimal)
+            .unwrap_or(ParameterValue::String(value)),
+        Some(SyntaxKind::Date) => ParameterValue::Date(value.trim_start_matches('@').to_owned()),
+        Some(SyntaxKind::DateTime) => {
+            ParameterValue::DateTime(value.trim_start_matches('@').to_owned())
         }
-        _ => Parameter::String(value),
+        Some(SyntaxKind::Time) => ParameterValue::Time(value.trim_start_matches("@T").to_owned()),
+        Some(SyntaxKind::Ident) if value == "true" || value == "false" => {
+            ParameterValue::Boolean(value == "true")
+        }
+        _ => ParameterValue::String(value),
     }
 }
 
@@ -728,6 +751,13 @@ fn leading_comments(node: &SyntaxNode) -> Option<String> {
         }
     }
     comments.reverse();
+    // Comments right after `map "url" = "name"` are the map's description.
+    if previous
+        .as_ref()
+        .is_some_and(|p| p.kind() == SyntaxKind::MapDeclaration)
+    {
+        return None;
+    }
     let owns_trailing = previous
         .as_ref()
         .is_some_and(|p| matches!(p.kind(), SyntaxKind::Rule | SyntaxKind::UsesDeclaration));

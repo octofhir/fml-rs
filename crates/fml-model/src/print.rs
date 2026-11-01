@@ -13,7 +13,7 @@ use crate::compile::{
     AUTO_VARIABLE, BATCH_UNNAMED_PREFIX, SOURCE_ELEMENT_EXTENSION, TARGET_ELEMENT_EXTENSION,
     make_id, source_path,
 };
-use crate::model::{Group, Parameter, Rule, Source, StructureMap, Target};
+use crate::model::{Group, Parameter, ParameterValue, Rule, Source, StructureMap, Target};
 
 /// Writes a StructureMap as FML.
 pub fn print(map: &StructureMap) -> String {
@@ -79,7 +79,7 @@ impl Printer {
                     && !description.contains("\"\"\"")
                     && !description.ends_with('"')
                 {
-                    format!("/// description = \"\"\"\n{description}\n\"\"\"")
+                    format!("/// description = \"\"\"{description}\"\"\"")
                 } else {
                     format!("/// description = {}", quote_fhirpath_string(description))
                 },
@@ -373,7 +373,7 @@ fn has_only_legacy_default_dependent(rule: &Rule) -> bool {
                 && dependent
                     .parameter
                     .iter()
-                    .all(|p| matches!(p, Parameter::Id(id) if id == AUTO_VARIABLE))
+                    .all(|p| matches!(&p.value, ParameterValue::Id(id) if id == AUTO_VARIABLE))
         }
         _ => false,
     }
@@ -513,16 +513,21 @@ fn target_text(target: &Target, abbreviate: bool) -> String {
         if target.context.is_some() {
             text.push_str(" = ");
         }
-        match (transform.as_str(), target.parameter.as_slice()) {
-            ("copy", [parameter]) => text.push_str(&parameter_text(parameter)),
-            ("evaluate", [Parameter::String(expression)]) => {
+        let values: Vec<&ParameterValue> = target.parameter.iter().map(|p| &p.value).collect();
+        match (transform.as_str(), values.as_slice()) {
+            ("copy", [_]) => text.push_str(&parameter_text(&target.parameter[0])),
+            ("evaluate", [ParameterValue::String(expression)]) => {
                 let _ = write!(text, "({expression})");
             }
-            ("evaluate", [first, Parameter::String(expression)]) => {
-                let _ = write!(text, "evaluate({}, {expression})", parameter_text(first));
+            ("evaluate", [_, ParameterValue::String(expression)]) => {
+                let _ = write!(
+                    text,
+                    "evaluate({}, {expression})",
+                    parameter_text(&target.parameter[0])
+                );
             }
-            (transform, parameters) => {
-                let arguments: Vec<String> = parameters.iter().map(parameter_text).collect();
+            (transform, _) => {
+                let arguments: Vec<String> = target.parameter.iter().map(parameter_text).collect();
                 let _ = write!(text, "{transform}({})", arguments.join(", "));
             }
         }
@@ -542,14 +547,14 @@ fn target_text(target: &Target, abbreviate: bool) -> String {
 }
 
 fn parameter_text(parameter: &Parameter) -> String {
-    match parameter {
-        Parameter::Id(id) => id.split('.').map(name).collect::<Vec<_>>().join("."),
-        Parameter::String(value) => quote_fhirpath_string(value),
-        Parameter::Boolean(value) => value.to_string(),
-        Parameter::Integer(value) => value.to_string(),
-        Parameter::Decimal(value) => value.to_string(),
-        Parameter::Date(value) | Parameter::DateTime(value) => format!("@{value}"),
-        Parameter::Time(value) => format!("@T{value}"),
+    match &parameter.value {
+        ParameterValue::Id(id) => id.split('.').map(name).collect::<Vec<_>>().join("."),
+        ParameterValue::String(value) => quote_fhirpath_string(value),
+        ParameterValue::Boolean(value) => value.to_string(),
+        ParameterValue::Integer(value) => value.to_string(),
+        ParameterValue::Decimal(value) => value.to_string(),
+        ParameterValue::Date(value) | ParameterValue::DateTime(value) => format!("@{value}"),
+        ParameterValue::Time(value) => format!("@T{value}"),
     }
 }
 

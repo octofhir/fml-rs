@@ -17,13 +17,15 @@
 //! assert_eq!(rule.target[0].transform.as_deref(), Some("create"));
 //! ```
 
+mod canonical;
 mod compile;
 pub mod model;
 mod print;
 
 pub use compile::{
-    AUTO_VARIABLE, BATCH_UNNAMED_PREFIX, Compiled, SOURCE_ELEMENT_EXTENSION,
-    TARGET_ELEMENT_EXTENSION, compile, compile_tree, make_id, source_path,
+    AUTO_VARIABLE, BATCH_UNNAMED_PREFIX, Compiled, REFERENCES_CONTAINED_EXTENSION,
+    SOURCE_ELEMENT_EXTENSION, TARGET_ELEMENT_EXTENSION, compile, compile_tree, make_id,
+    source_path,
 };
 pub use model::StructureMap;
 pub use print::print;

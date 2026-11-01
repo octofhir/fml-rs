@@ -83,7 +83,17 @@ expression: "map_json(r#\"/// status = 'active'\nconceptmap \"GenderMap\" {\n  p
                   "valueId": "v"
                 },
                 {
-                  "valueString": "#GenderMap"
+                  "valueString": "#GenderMap",
+                  "_valueString": {
+                    "extension": [
+                      {
+                        "url": "http://hl7.org/fhir/StructureDefinition/referencesContained",
+                        "valueReference": {
+                          "reference": "#GenderMap"
+                        }
+                      }
+                    ]
+                  }
                 },
                 {
                   "valueString": "code"

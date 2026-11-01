@@ -236,9 +236,26 @@ pub struct Dependent {
     pub other: Map<String, Value>,
 }
 
-/// A transform or dependent-group parameter: `value[x]`.
+/// A transform or dependent-group parameter: `value[x]`, and the `_value[x]` element that carries
+/// extensions on the value (such as the reference to a contained ConceptMap).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Parameter {
+pub struct Parameter {
+    pub value: ParameterValue,
+    pub value_element: Option<Value>,
+}
+
+impl From<ParameterValue> for Parameter {
+    fn from(value: ParameterValue) -> Self {
+        Self {
+            value,
+            value_element: None,
+        }
+    }
+}
+
+/// The value of a parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParameterValue {
     /// A variable name.
     Id(String),
     String(String),
@@ -250,38 +267,69 @@ pub enum Parameter {
     DateTime(String),
 }
 
-impl Parameter {
+impl ParameterValue {
     fn key(&self) -> &'static str {
         match self {
-            Parameter::Id(_) => "valueId",
-            Parameter::String(_) => "valueString",
-            Parameter::Boolean(_) => "valueBoolean",
-            Parameter::Integer(_) => "valueInteger",
-            Parameter::Decimal(_) => "valueDecimal",
-            Parameter::Date(_) => "valueDate",
-            Parameter::Time(_) => "valueTime",
-            Parameter::DateTime(_) => "valueDateTime",
+            ParameterValue::Id(_) => "valueId",
+            ParameterValue::String(_) => "valueString",
+            ParameterValue::Boolean(_) => "valueBoolean",
+            ParameterValue::Integer(_) => "valueInteger",
+            ParameterValue::Decimal(_) => "valueDecimal",
+            ParameterValue::Date(_) => "valueDate",
+            ParameterValue::Time(_) => "valueTime",
+            ParameterValue::DateTime(_) => "valueDateTime",
         }
     }
 
-    fn value(&self) -> Value {
+    fn json(&self) -> Value {
         match self {
-            Parameter::Id(v)
-            | Parameter::String(v)
-            | Parameter::Date(v)
-            | Parameter::Time(v)
-            | Parameter::DateTime(v) => Value::String(v.clone()),
-            Parameter::Boolean(v) => Value::Bool(*v),
-            Parameter::Integer(v) => Value::from(*v),
-            Parameter::Decimal(v) => Value::Number(v.clone()),
+            ParameterValue::Id(v)
+            | ParameterValue::String(v)
+            | ParameterValue::Date(v)
+            | ParameterValue::Time(v)
+            | ParameterValue::DateTime(v) => Value::String(v.clone()),
+            ParameterValue::Boolean(v) => Value::Bool(*v),
+            ParameterValue::Integer(v) => Value::from(*v),
+            ParameterValue::Decimal(v) => Value::Number(v.clone()),
         }
+    }
+
+    fn from_json(key: &str, value: Value) -> Result<Option<Self>, String> {
+        let text = || {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{key} must be a string"))
+        };
+        Ok(Some(match key {
+            "valueId" => ParameterValue::Id(text()?),
+            "valueString" => ParameterValue::String(text()?),
+            "valueDate" => ParameterValue::Date(text()?),
+            "valueTime" => ParameterValue::Time(text()?),
+            "valueDateTime" => ParameterValue::DateTime(text()?),
+            "valueBoolean" => {
+                ParameterValue::Boolean(value.as_bool().ok_or("valueBoolean must be a boolean")?)
+            }
+            "valueInteger" => {
+                ParameterValue::Integer(value.as_i64().ok_or("valueInteger must be an integer")?)
+            }
+            "valueDecimal" => match value {
+                Value::Number(n) => ParameterValue::Decimal(n),
+                _ => return Err("valueDecimal must be a number".to_owned()),
+            },
+            _ => return Ok(None),
+        }))
     }
 }
 
 impl Serialize for Parameter {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry(self.key(), &self.value())?;
+        let key = self.value.key();
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry(key, &self.value.json())?;
+        if let Some(element) = &self.value_element {
+            map.serialize_entry(&format!("_{key}"), element)?;
+        }
         map.end()
     }
 }
@@ -298,46 +346,27 @@ impl<'de> Deserialize<'de> for Parameter {
             }
 
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Parameter, A::Error> {
-                let mut found = None;
+                let mut value = None;
+                let mut value_element = None;
                 while let Some(key) = map.next_key::<String>()? {
-                    let value: Value = map.next_value()?;
-                    if !key.starts_with("value") {
-                        continue;
+                    let json: Value = map.next_value()?;
+                    if key.starts_with("_value") {
+                        value_element = Some(json);
+                    } else if key.starts_with("value") {
+                        value = Some(
+                            ParameterValue::from_json(&key, json)
+                                .map_err(de::Error::custom)?
+                                .ok_or_else(|| {
+                                    de::Error::custom(format!("unsupported parameter type {key}"))
+                                })?,
+                        );
                     }
-                    let text = || {
-                        value
-                            .as_str()
-                            .map(str::to_owned)
-                            .ok_or_else(|| de::Error::custom(format!("{key} must be a string")))
-                    };
-                    found = Some(match key.as_str() {
-                        "valueId" => Parameter::Id(text()?),
-                        "valueString" => Parameter::String(text()?),
-                        "valueDate" => Parameter::Date(text()?),
-                        "valueTime" => Parameter::Time(text()?),
-                        "valueDateTime" => Parameter::DateTime(text()?),
-                        "valueBoolean" => {
-                            Parameter::Boolean(value.as_bool().ok_or_else(|| {
-                                de::Error::custom("valueBoolean must be a boolean")
-                            })?)
-                        }
-                        "valueInteger" => {
-                            Parameter::Integer(value.as_i64().ok_or_else(|| {
-                                de::Error::custom("valueInteger must be an integer")
-                            })?)
-                        }
-                        "valueDecimal" => match value {
-                            Value::Number(n) => Parameter::Decimal(n),
-                            _ => return Err(de::Error::custom("valueDecimal must be a number")),
-                        },
-                        other => {
-                            return Err(de::Error::custom(format!(
-                                "unsupported parameter type {other}"
-                            )));
-                        }
-                    });
                 }
-                found.ok_or_else(|| de::Error::custom("parameter has no value[x]"))
+                let value = value.ok_or_else(|| de::Error::custom("parameter has no value[x]"))?;
+                Ok(Parameter {
+                    value,
+                    value_element,
+                })
             }
         }
 
