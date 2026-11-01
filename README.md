@@ -21,8 +21,12 @@ the simple copy form, batch identity rules, embedded concept maps as contained C
 documentation from comments, FHIRPath stored in canonical form. It also prints a StructureMap back
 as FML, including maps built by older IG Publisher versions.
 
-All 1,643 public maps we test against parse without errors, formatting them is idempotent, and
-FML → StructureMap → FML → StructureMap gives back the same StructureMap for every one of them:
+All 1,643 public maps we test against parse without errors, formatting them is idempotent,
+FML → StructureMap → FML → StructureMap gives back the same StructureMap for every one of them,
+and the StructureMap is identical to the one the reference compiler builds (`scripts/reference.sh`
+runs it), except for two places where we keep what the map says: whitespace-only string arguments
+such as `append(a, ' ', b)`, which the reference JSON writer drops, and calendar durations such as
+`5 days`, which it rewrites as the quantity `5 'days'`. The corpus:
 the [cross-version maps](https://github.com/HL7/fhir-cross-version), the
 [R6 maps](https://github.com/brianpos/fhir-r6-maps), the Mapping Language IG examples and the
 [FHIR test cases](https://github.com/FHIR/fhir-test-cases). Run the same check locally with
