@@ -19,7 +19,7 @@ fhirschema = ["dep:octofhir-fhirschema"]
 
 [dependencies]
 fml-syntax = { path = "../fml-syntax", version = "0.1.0" }
-octofhir-fhirschema = { version = "0.3.32", optional = true }
+octofhir-fhirschema = { version = "0.3.33", optional = true }
 
 [dev-dependencies]
 insta = "1.48"
