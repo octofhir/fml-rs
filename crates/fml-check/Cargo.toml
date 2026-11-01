@@ -1,0 +1,24 @@
+[package]
+name = "fml-check"
+description = "Type checker for the FHIR Mapping Language: element paths, types, variables and group calls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+# Core FHIR definitions (R4, R4B, R5, R6) embedded from octofhir-fhirschema.
+fhirschema = ["dep:octofhir-fhirschema"]
+
+[dependencies]
+fml-syntax = { path = "../fml-syntax", version = "0.1.0" }
+octofhir-fhirschema = { version = "0.3.31", optional = true }
+
+[dev-dependencies]
+insta = "1.48"
