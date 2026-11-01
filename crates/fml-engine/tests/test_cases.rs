@@ -12,14 +12,6 @@ use fml_engine::{Engine, FhirPathExpressions};
 use fml_model::StructureMap;
 use serde_json::Value;
 
-/// Tests that need a FHIRPath feature octofhir-fhirpath does not have yet: `.value` on a FHIR
-/// primitive (`linkId.value`), which the FHIR model defines and the reference engine supports.
-const NEEDS_PRIMITIVE_VALUE: &[&str] = &[
-    "qr2patgender",
-    "qr2pathumannametwice",
-    "qr2pathumannameshared",
-];
-
 fn test_cases() -> PathBuf {
     match std::env::var_os("FHIR_TEST_CASES") {
         Some(dir) => PathBuf::from(dir),
