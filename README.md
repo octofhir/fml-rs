@@ -26,9 +26,13 @@ R6 definitions (including the version-specific `http://hl7.org/fhir/4.0/…` URL
 cross-version maps), and reports elements that do not exist, type annotations that are not a type
 of the element, unknown variables, writes into source variables, unknown or abstract types in
 `create`, wrong transform arity, and calls to undeclared groups or with the wrong number of
-arguments. Untyped groups are checked with the types they are called with. The cross-version maps
+arguments. Untyped groups are checked with the types they are called with. Element paths inside
+FHIRPath (`where`, `check`, `log`, `default`, `(…)`, `evaluate`) are checked too, as warnings: a
+wrong path there gives an empty result rather than an error, as in
+`relationship.exists(code = 'parent')` on a CodeableConcept, which is never true. The cross-version maps
 check clean; elsewhere it finds real mistakes, such as the `tgt.identifer` typo in the FHIR test
-cases or a group in the R6 maps that uses a parameter it does not declare.
+cases, a group in the R6 maps that uses a parameter it does not declare, or a condition there that
+reads `system` and `code` from a CodeableConcept instead of its codings.
 
 `fml-engine` runs a StructureMap over FHIR JSON the way the reference engine does: extended
 groups, source filters (type, `where`, `check`, `log`, list modes, defaults), targets that create

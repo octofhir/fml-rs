@@ -113,3 +113,23 @@ group Item(source src, target tgt) {
     "
     );
 }
+
+#[test]
+fn checks_element_paths_inside_fhirpath() {
+    let source = r#"uses "http://hl7.org/fhir/StructureDefinition/Account" as source
+uses "http://hl7.org/fhir/StructureDefinition/Account" as target
+
+group Main(source src : Account, target tgt : Account) {
+  src.relatedAccount as ra where (ra.relationship.exists(system = 'x' and code = 'parent')) -> tgt.name = 'a' "wrong";
+  src.relatedAccount as ra where (relationship.coding.exists(system = 'x' and code = 'parent')) -> tgt.name = 'b' "right";
+  src.coverage as c where (c.coverage.resolve().exists() and $this.priority > 0) -> tgt.name = (c.coverage.display) "deep";
+  src.name as n -> tgt.description = (n.lenght().toString()) "functionsAreNotChecked";
+  src.status as s where (statuss = 'active') -> tgt.status = s "typo";
+}
+"#;
+    insta::assert_snapshot!(diagnostics(source, Release::R5), @r"
+    5:58 `CodeableConcept` has no element `system`
+    5:75 `CodeableConcept` has no element `code`
+    9:26 `code` has no element `statuss`
+    ");
+}

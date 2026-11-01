@@ -265,14 +265,28 @@ impl<'a> Checker<'a> {
             annotated.as_deref(),
             annotation.as_ref(),
         );
+        if let Some(default) = source.default_value().and_then(|d| d.expression()) {
+            self.check_expression(&default, &Type::Unknown, scope);
+        }
         if let Some(alias) = source.alias() {
             scope.define(
                 alias,
                 Variable {
-                    ty,
+                    ty: ty.clone(),
                     mode: Mode::Source,
                 },
             );
+        }
+        // `where`, `check` and `log` see each item as the focus, and its variable.
+        for clause in [
+            source.where_clause(),
+            source.check_clause(),
+            source.log_clause(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.check_expression(&clause, &ty, scope);
         }
     }
 
@@ -364,7 +378,11 @@ impl<'a> Checker<'a> {
             TransformValue::Invocation(invocation) => {
                 self.check_invocation(invocation, element, scope)
             }
-            TransformValue::Literal(_) | TransformValue::Expression(_) => element,
+            TransformValue::Expression(expression) => {
+                self.check_expression(expression, &Type::Unknown, scope);
+                element
+            }
+            TransformValue::Literal(_) => element,
         }
     }
 
@@ -388,6 +406,15 @@ impl<'a> Checker<'a> {
                     arguments.len()
                 ),
             );
+        }
+        if name == "evaluate"
+            && let [focus, expression] = arguments.as_slice()
+        {
+            let focus = scope
+                .get(&focus.text())
+                .map(|v| v.ty.clone())
+                .unwrap_or(Type::Unknown);
+            self.check_expression(expression, &focus, scope);
         }
         for (index, argument) in arguments.iter().enumerate() {
             let is_expression = name == "evaluate" && index == 1;
@@ -480,6 +507,131 @@ impl<'a> Checker<'a> {
     }
 
     // ---- Element paths ----------------------------------------------------------------------
+
+    // ---- FHIRPath ---------------------------------------------------------------------------
+
+    /// Checks the element paths of a FHIRPath expression: a name that is not a variable is an
+    /// element of `focus`. Problems are warnings, since a wrong path gives an empty result rather
+    /// than an error, but it is nearly always a mistake.
+    fn check_expression(&mut self, expression: &Expr, focus: &Type, scope: &Scope) {
+        self.expression_type(expression.syntax(), focus, scope);
+    }
+
+    /// The type an expression gives, where it is known, reporting missing elements on the way.
+    fn expression_type(&mut self, node: &SyntaxNode, focus: &Type, scope: &Scope) -> Type {
+        match node.kind() {
+            SyntaxKind::NameRef => {
+                let Some(token) = node.first_token() else {
+                    return Type::Unknown;
+                };
+                if token.kind() == SyntaxKind::DollarIdent {
+                    return if token.text() == "$this" {
+                        focus.clone()
+                    } else {
+                        Type::Unknown
+                    };
+                }
+                let name = ast::name_text(&token);
+                if let Some(variable) = scope.get(&name) {
+                    return variable.ty.clone();
+                }
+                // `Patient.name` on a Patient: the type name selects the focus itself.
+                if focus.fhir_type().as_deref() == Some(name.as_str()) {
+                    return focus.clone();
+                }
+                self.element_of(focus, &name, node)
+            }
+            SyntaxKind::MemberExpr => {
+                let mut parts = node.children();
+                let (Some(left), Some(right)) = (parts.next(), parts.next()) else {
+                    return Type::Unknown;
+                };
+                let input = self.expression_type(&left, focus, scope);
+                match right.kind() {
+                    SyntaxKind::NameRef => match right.first_token() {
+                        Some(token) if token.kind() != SyntaxKind::DollarIdent => {
+                            self.element_of(&input, &ast::name_text(&token), &right)
+                        }
+                        _ => Type::Unknown,
+                    },
+                    SyntaxKind::CallExpr => self.call_type(&right, &input, scope),
+                    _ => Type::Unknown,
+                }
+            }
+            SyntaxKind::CallExpr => self.call_type(node, focus, scope),
+            SyntaxKind::ParenExpr => match node.children().next() {
+                Some(inner) => self.expression_type(&inner, focus, scope),
+                None => Type::Unknown,
+            },
+            SyntaxKind::IndexExpr => {
+                let mut parts = node.children();
+                let input = match parts.next() {
+                    Some(left) => self.expression_type(&left, focus, scope),
+                    None => Type::Unknown,
+                };
+                if let Some(index) = parts.next() {
+                    self.expression_type(&index, focus, scope);
+                }
+                input
+            }
+            SyntaxKind::BinaryExpr | SyntaxKind::PrefixExpr | SyntaxKind::TypeExpr => {
+                for child in node.children().filter(|c| Expr::can_cast(c.kind())) {
+                    self.expression_type(&child, focus, scope);
+                }
+                Type::Unknown
+            }
+            _ => Type::Unknown,
+        }
+    }
+
+    fn element_of(&mut self, ty: &Type, name: &str, at: &SyntaxNode) -> Type {
+        match self.types().lookup(ty, name) {
+            Lookup::Found(found) => self.types().element_type(&found, None),
+            Lookup::Missing => {
+                let message = format!("`{}` has no element `{name}`", ty.display());
+                self.report(Severity::Warning, trimmed_range(at), message);
+                Type::Unknown
+            }
+            Lookup::Unknown => Type::Unknown,
+        }
+    }
+
+    /// A function call on `input`. The iterating functions see each input item as the focus of
+    /// their argument; the arguments of the others are left unchecked.
+    fn call_type(&mut self, call: &SyntaxNode, input: &Type, scope: &Scope) -> Type {
+        let name = call
+            .first_token()
+            .map(|t| t.text().to_owned())
+            .unwrap_or_default();
+        let arguments: Vec<SyntaxNode> = call
+            .children()
+            .find(|n| n.kind() == SyntaxKind::ArgumentList)
+            .map(|list| {
+                list.children()
+                    .filter(|c| Expr::can_cast(c.kind()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let iterating = matches!(
+            name.as_str(),
+            "where" | "select" | "exists" | "all" | "repeat" | "sort" | "aggregate"
+        );
+        let argument_focus = if iterating {
+            input.clone()
+        } else {
+            Type::Unknown
+        };
+        let mut last = Type::Unknown;
+        for argument in &arguments {
+            last = self.expression_type(argument, &argument_focus, scope);
+        }
+        match name.as_str() {
+            "where" | "first" | "last" | "tail" | "skip" | "take" | "single" | "distinct"
+            | "trace" | "repeat" | "sort" => input.clone(),
+            "select" => last,
+            _ => Type::Unknown,
+        }
+    }
 
     /// Follows `context.a.b` from the context variable's type, reporting missing elements, and
     /// returns the type at the end. `annotation` is the source's `: Type`, which chooses a type of
