@@ -66,14 +66,9 @@ pub fn name_text(token: &SyntaxToken) -> String {
 
 /// Removes the quotes from a string or delimited identifier and resolves escape sequences.
 pub fn unescape(text: &str) -> String {
+    // Markdown between triple quotes is taken verbatim, line breaks included.
     let inner = if text.starts_with("\"\"\"") && text.len() >= 6 {
-        let inner = &text[3..text.len() - 3];
-        return inner
-            .strip_prefix("\r\n")
-            .or_else(|| inner.strip_prefix('\n'))
-            .unwrap_or(inner)
-            .trim_end_matches(['\r', '\n'])
-            .to_owned();
+        return text[3..text.len() - 3].to_owned();
     } else if text.len() >= 2 {
         &text[1..text.len() - 1]
     } else {

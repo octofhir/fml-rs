@@ -44,7 +44,7 @@ group Demo(source src : Pat, target tgt : Basic) extends Base <<type+>> {
             ),
             (
                 "description".to_owned(),
-                Some("Multi-line **markdown**.".to_owned())
+                Some("\nMulti-line **markdown**.\n".to_owned())
             ),
         ]
     );
