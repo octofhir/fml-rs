@@ -298,8 +298,8 @@ struct Resource {
 const PACKAGE_TYPES: [&str; 3] = ["StructureDefinition", "StructureMap", "ConceptMap"];
 
 /// The StructureDefinitions, StructureMaps and ConceptMaps of a package: a folder (or its
-/// `package` subfolder), or `name@version`, installed from the package registry into the local
-/// package store when it is not there yet.
+/// `package` subfolder), or `name@version` from the local package store, installed from the
+/// package registry when it is not there yet.
 fn package_resources(spec: &str) -> Result<Vec<Resource>> {
     let path = Path::new(spec);
     if path.is_dir() {
@@ -318,7 +318,7 @@ fn package_resources(spec: &str) -> Result<Vec<Resource>> {
         .enable_all()
         .build()
         .map_err(|e| format!("cannot start the runtime: {e}"))?;
-    let resources = runtime.block_on(async {
+    let folder = runtime.block_on(async {
         let config = FcmConfig::load().await.map_err(|e| e.to_string())?;
         let manager = CanonicalManager::new(config)
             .await
@@ -330,29 +330,12 @@ fn package_resources(spec: &str) -> Result<Vec<Resource>> {
                 .await
                 .map_err(|e| format!("cannot install {spec}: {e}"))?;
         }
-        let storage = manager
-            .sqlite_storage_handle()
-            .ok_or_else(|| format!("{spec}: the package store cannot read resources"))?;
-        let mut resources = Vec::new();
-        for resource_type in PACKAGE_TYPES {
-            let found = manager
-                .find_by_type_and_package(resource_type, name)
-                .await
-                .map_err(|e| format!("{spec}: {e}"))?;
-            for index in found.iter().filter(|i| i.package_version == version) {
-                let resource = storage
-                    .get_resource(index)
-                    .await
-                    .map_err(|e| format!("{spec}: {}: {e}", index.canonical_url))?;
-                resources.push(Resource {
-                    origin: format!("{spec}: {}", index.canonical_url),
-                    json: resource.content,
-                });
-            }
-        }
-        Ok::<_, String>(resources)
+        manager
+            .package_dir(name, version)
+            .await
+            .map_err(|e| format!("{spec}: {e}"))
     })?;
-    Ok(resources)
+    folder_resources(&folder.join("package"))
 }
 
 /// The StructureDefinitions, StructureMaps and ConceptMaps among the JSON files of a folder.
