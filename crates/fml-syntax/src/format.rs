@@ -14,7 +14,7 @@ use std::fmt;
 use rowan::NodeOrToken;
 
 use crate::SyntaxKind::{self, *};
-use crate::ast::{AstNode, SourceFile};
+use crate::ast::{AstNode, SourceFile, unescape};
 use crate::{Diagnostic, SyntaxNode, SyntaxToken, parse};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +394,51 @@ fn contains_comment_outside_blocks(node: &SyntaxNode) -> bool {
         NodeOrToken::Token(token) => token.kind().is_comment(),
         NodeOrToken::Node(child) => contains_comment_outside_blocks(&child),
     })
+}
+
+/// Renders a FHIRPath expression in canonical form: one space around binary operators, none
+/// inside paths and calls, comments dropped, strings single-quoted. This is the form StructureMap
+/// stores expressions in, and the one the HL7 reference compiler produces.
+pub fn expression_text(node: &SyntaxNode) -> String {
+    let mut out = String::new();
+    let mut last: Option<SyntaxToken> = None;
+    for token in node
+        .descendants_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+        .filter(|t| !t.kind().is_trivia())
+    {
+        if let Some(previous) = &last
+            && space_between(previous, &token)
+        {
+            out.push(' ');
+        }
+        if token.kind() == DoubleQuotedString {
+            out.push_str(&quote_fhirpath_string(&unescape(token.text())));
+        } else {
+            out.push_str(token.text());
+        }
+        last = Some(token);
+    }
+    out
+}
+
+/// Writes `value` as a single-quoted FHIRPath string literal.
+pub fn quote_fhirpath_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for c in value.chars() {
+        match c {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{c}' => out.push_str("\\f"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 fn space_between(previous: &SyntaxToken, next: &SyntaxToken) -> bool {

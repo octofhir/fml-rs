@@ -210,6 +210,30 @@ impl ConceptMap {
     pub fn entries(&self) -> impl Iterator<Item = ConceptMapEntry> + use<> {
         children(&self.0)
     }
+
+    pub fn unmapped(&self) -> impl Iterator<Item = ConceptMapUnmapped> + use<> {
+        children(&self.0)
+    }
+}
+
+ast_node!(
+    /// `unmapped for s = provided`
+    ConceptMapUnmapped,
+    ConceptMapUnmapped
+);
+
+impl ConceptMapUnmapped {
+    pub fn prefix(&self) -> Option<String> {
+        name_after(&self.0, &["unmapped", "for"])
+    }
+
+    /// The unmapped mode, such as `provided`.
+    pub fn mode(&self) -> Option<String> {
+        tokens(&self.0)
+            .filter(|t| t.kind() == SyntaxKind::Ident)
+            .last()
+            .map(|t| t.text().to_owned())
+    }
 }
 
 ast_node!(
@@ -859,6 +883,12 @@ impl Expr {
             }
         }
         expr
+    }
+
+    /// The expression in canonical form, as StructureMap stores it; see
+    /// [`expression_text`](crate::expression_text).
+    pub fn canonical_text(&self) -> String {
+        crate::expression_text(&self.0)
     }
 
     /// The expression's source text, comments and whitespace kept as written.

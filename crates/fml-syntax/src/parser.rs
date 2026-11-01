@@ -318,6 +318,8 @@ impl<'a> Parser<'a> {
                     self.expect(Eq, "`=`");
                     self.url();
                     self.finish();
+                } else if self.at_kw("unmapped") {
+                    self.concept_map_unmapped();
                 } else if self.at(Ident) && self.nth(1) == Some(Colon) {
                     self.concept_map_entry();
                 } else {
@@ -327,6 +329,21 @@ impl<'a> Parser<'a> {
             }
             self.expect(RBrace, "`}`");
         }
+        self.finish();
+    }
+
+    /// `unmapped for s = provided`
+    fn concept_map_unmapped(&mut self) {
+        self.start(ConceptMapUnmapped);
+        self.bump();
+        if self.at_kw("for") {
+            self.bump();
+        } else {
+            self.error_expected("`for`");
+        }
+        self.name_token("a prefix name");
+        self.expect(Eq, "`=`");
+        self.name_token("an unmapped mode such as `provided`");
         self.finish();
     }
 
@@ -415,7 +432,15 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.optional_semicolon();
         self.finish();
+    }
+
+    /// The reference compiler accepts a `;` after `uses`, `imports` and a group's `}`.
+    fn optional_semicolon(&mut self) {
+        if self.at(Semicolon) {
+            self.bump();
+        }
     }
 
     /// `imports "url"`
@@ -423,6 +448,7 @@ impl<'a> Parser<'a> {
         self.start(ImportsDeclaration);
         self.bump();
         self.url();
+        self.optional_semicolon();
         self.finish();
     }
 
@@ -467,6 +493,7 @@ impl<'a> Parser<'a> {
         }
         if self.at(LBrace) {
             self.rule_block();
+            self.optional_semicolon();
         } else {
             self.error_expected("`{` and the group rules");
         }
@@ -845,7 +872,17 @@ impl<'a> Parser<'a> {
             }
             self.start_at(checkpoint, kind);
             self.bump();
-            if kind == TypeExpr {
+            if kind == TypeExpr && self.at(SingleQuotedString) {
+                // Some published maps quote the type (`$this is 'Reference'`).
+                let range = self.current_range();
+                self.diagnostics.push(Diagnostic::warning(
+                    range,
+                    "a type name is an identifier and should not be quoted",
+                ));
+                self.start(Literal);
+                self.bump();
+                self.finish();
+            } else if kind == TypeExpr {
                 self.qualified_name();
             } else {
                 self.expression_bp(bp + 1, allow_as);

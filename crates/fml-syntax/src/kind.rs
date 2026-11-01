@@ -89,6 +89,8 @@ pub enum SyntaxKind {
     ConceptMap,
     /// `prefix s = "url"`
     ConceptMapPrefix,
+    /// `unmapped for s = provided`
+    ConceptMapUnmapped,
     /// `s:code - t:code`
     ConceptMapEntry,
     /// `s:code`

@@ -30,10 +30,12 @@ mod parser;
 use rowan::GreenNode;
 
 pub use diagnostic::{Diagnostic, LineCol, LineIndex, Severity};
-pub use format::{FormatError, FormatOptions, format, format_tree};
+pub use format::{
+    FormatError, FormatOptions, expression_text, format, format_tree, quote_fhirpath_string,
+};
 pub use kind::{FmlLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 pub use lexer::{Token, tokenize};
-pub use rowan::{TextRange, TextSize};
+pub use rowan::{Direction, NodeOrToken, TextRange, TextSize};
 
 /// The result of parsing: a syntax tree that covers the whole input, plus the problems found.
 #[derive(Debug, Clone)]
