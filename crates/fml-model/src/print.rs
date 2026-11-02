@@ -92,6 +92,7 @@ impl Printer {
         header.extend(metadata("publisher", &map.publisher));
         header.extend(metadata("purpose", &map.purpose));
         header.extend(metadata("copyright", &map.copyright));
+        header.extend(crate::metadata::print(&map.other));
         for line in header {
             self.line(0, &line);
         }

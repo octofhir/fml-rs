@@ -1,9 +1,29 @@
 //! ConceptMaps for the `translate` transform.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use serde_json::Value;
+
+/// A future a [`TranslateService`] returns.
+pub type TranslateFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Translation>, String>> + 'a>>;
+
+/// A terminology service that runs `ConceptMap/$translate` (transforms.md, "translate"), for the
+/// ConceptMaps the engine does not hold itself: a FHIR server's own ConceptMaps, or an external
+/// terminology server.
+pub trait TranslateService {
+    /// Translates `code` from `system` (when known) with the ConceptMap at `url`. `Ok(None)`: no
+    /// translation; an error when the service fails or the translation is ambiguous.
+    fn translate<'a>(
+        &'a self,
+        url: &'a str,
+        system: Option<&'a str>,
+        code: &'a str,
+    ) -> TranslateFuture<'a>;
+}
 
 /// Finds ConceptMaps by canonical URL, for `translate(value, 'url', output)`.
 pub trait ConceptMapResolver {

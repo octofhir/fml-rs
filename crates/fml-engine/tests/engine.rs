@@ -248,7 +248,7 @@ async fn date_time_and_escape_transforms() {
         r#"{HEADER}
 group Main(source src : Patient, target tgt : Basic) {{
   src.id as v -> tgt.created = toDate(v, 'dd/MM/yyyy') "date";
-  src.id as v -> tgt.extension as e, e.url = 'http://example.org/when', e.value = unixToDateTime(1714570200, '+10:00') "unix";
+  src.id as v -> tgt.extension as e, e.url = 'http://example.org/when', e.value = unixToDateTime(1714570200000, '+10:00') "unix";
   src.id as v -> tgt.extension as e, e.url = 'http://example.org/text', e.value = escape('a < b', 'none', 'html') "escaped";
 }}
 "#
@@ -360,4 +360,58 @@ async fn traces_follow_the_stack_rules() {
     let trace = error.trace.unwrap();
     assert_eq!(trace.status, TraceStatus::Stopped);
     assert_eq!(trace.events.last().unwrap().phase, Phase::Step);
+}
+
+#[tokio::test]
+async fn primitive_arrays_keep_their_shadow_elements_aligned() {
+    let map = r#"uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as target
+
+group Main(source src : Patient, target tgt : Patient) {
+  src.name as n -> tgt.name as t then {
+    n.given as g -> t.given = g "given";
+  } "name";
+}
+"#;
+    let source = json!({
+        "resourceType": "Patient",
+        "name": [{
+            "given": [null, "first", "second"],
+            "_given": [{ "id": "g0" }, null, { "extension": [{ "url": "http://example.org/x", "valueString": "y" }] }]
+        }]
+    });
+    assert_eq!(
+        run(map, source).await.unwrap(),
+        json!({
+            "resourceType": "Patient",
+            "name": [{
+                "given": [null, "first", "second"],
+                "_given": [{ "id": "g0" }, null, { "extension": [{ "url": "http://example.org/x", "valueString": "y" }] }]
+            }]
+        })
+    );
+}
+
+#[tokio::test]
+async fn quantities_from_text() {
+    let map = r#"uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Observation" alias Observation as target
+
+group Main(source src : Patient, target tgt : Observation) {
+  src -> tgt.component as c, c.value = qty('< 5.5 mg') "a";
+  src -> tgt.component as c, c.value = qty('>=-2.5 kg') "b";
+  src -> tgt.component as c, c.value = qty('120 mm[Hg]') "c";
+}
+"#;
+    let target = run(map, json!({ "resourceType": "Patient" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        target["component"],
+        json!([
+            { "valueQuantity": { "comparator": "<", "value": 5.5, "unit": "mg" } },
+            { "valueQuantity": { "comparator": ">=", "value": -2.5, "unit": "kg" } },
+            { "valueQuantity": { "value": 120, "unit": "mm[Hg]" } }
+        ])
+    );
 }

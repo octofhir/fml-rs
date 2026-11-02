@@ -46,6 +46,66 @@ impl<D: Definitions> PackageDefinitions<D> {
         Ok(true)
     }
 
+    /// Adds a core StructureDefinition of another FHIR release under that release's
+    /// version-specific URL, as the cross-version maps name them: `release` `3.0` turns
+    /// `http://hl7.org/fhir/StructureDefinition/Patient` into
+    /// `http://hl7.org/fhir/3.0/StructureDefinition/Patient`, and the types it uses resolve in the
+    /// same release. STU3 definitions are read too: their element types are brought to the R4
+    /// shape first.
+    pub fn add_release(&mut self, resource: &Value, release: &str) -> Result<bool, String> {
+        if resource["resourceType"] != "StructureDefinition" {
+            return Ok(false);
+        }
+        let Some(name) = resource["url"]
+            .as_str()
+            .and_then(|url| url.strip_prefix("http://hl7.org/fhir/StructureDefinition/"))
+        else {
+            return Ok(false);
+        };
+        let url = format!("http://hl7.org/fhir/{release}/StructureDefinition/{name}");
+        let mut resource = resource.clone();
+        resource["url"] = Value::String(url.clone());
+        if release.starts_with('3') || release.starts_with('1') {
+            stu3_types_to_r4(&mut resource);
+        }
+        let definition: StructureDefinition = serde_json::from_value(resource)
+            .map_err(|e| format!("StructureDefinition `{url}`: {e}"))?;
+        let schema =
+            translate(definition, None).map_err(|e| format!("StructureDefinition `{url}`: {e}"))?;
+        self.by_url
+            .insert(url.clone(), Arc::new(convert(&schema, &url)));
+        Ok(true)
+    }
+
+    /// Adds every core StructureDefinition in a folder (a core package's `package` folder) under
+    /// the release's version-specific URLs; see [`add_release`](Self::add_release).
+    pub fn add_release_folder(
+        &mut self,
+        folder: &Path,
+        release: &str,
+    ) -> std::io::Result<(usize, Vec<String>)> {
+        let mut added = 0;
+        let mut problems = Vec::new();
+        for entry in std::fs::read_dir(folder)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(resource) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            match self.add_release(&resource, release) {
+                Ok(true) => added += 1,
+                Ok(false) => {}
+                Err(problem) => problems.push(format!("{}: {problem}", path.display())),
+            }
+        }
+        Ok((added, problems))
+    }
+
     /// Adds every StructureDefinition in a folder (a package's `package` folder, say); returns
     /// how many, and the files that could not be read as one.
     pub fn add_folder(&mut self, folder: &Path) -> std::io::Result<(usize, Vec<String>)> {
@@ -77,6 +137,59 @@ impl<D: Definitions> PackageDefinitions<D> {
 
     pub fn is_empty(&self) -> bool {
         self.by_url.is_empty()
+    }
+}
+
+/// STU3 element types in the R4 shape: one entry per type code, with `profile` and
+/// `targetProfile` as lists (STU3 repeats the code once per profile, each a single URL).
+fn stu3_types_to_r4(resource: &mut Value) {
+    // A primitive's `value` has no type code in STU3, only extensions; R4 names the FHIRPath type.
+    let system = match resource["type"].as_str().unwrap_or_default() {
+        "boolean" => "Boolean",
+        "integer" | "positiveInt" | "unsignedInt" => "Integer",
+        "decimal" => "Decimal",
+        "date" => "Date",
+        "dateTime" | "instant" => "DateTime",
+        "time" => "Time",
+        _ => "String",
+    };
+    let system = format!("http://hl7.org/fhirpath/System.{system}");
+    for view in ["snapshot", "differential"] {
+        let Some(elements) = resource[view]["element"].as_array_mut() else {
+            continue;
+        };
+        for element in elements {
+            let Some(types) = element["type"].as_array() else {
+                continue;
+            };
+            let mut merged: Vec<Value> = Vec::new();
+            for entry in types {
+                let mut entry = entry.clone();
+                if entry.get("code").is_none() {
+                    entry["code"] = Value::String(system.clone());
+                }
+                for key in ["profile", "targetProfile"] {
+                    if let Some(single) = entry[key].as_str() {
+                        entry[key] = Value::Array(vec![Value::String(single.to_owned())]);
+                    }
+                }
+                match merged.iter_mut().find(|m| m["code"] == entry["code"]) {
+                    Some(existing) => {
+                        for key in ["profile", "targetProfile"] {
+                            if let Some(more) = entry[key].as_array() {
+                                let list = existing[key].as_array_mut();
+                                match list {
+                                    Some(list) => list.extend(more.iter().cloned()),
+                                    None => existing[key] = Value::Array(more.clone()),
+                                }
+                            }
+                        }
+                    }
+                    None => merged.push(entry),
+                }
+            }
+            element["type"] = Value::Array(merged);
+        }
     }
 }
 

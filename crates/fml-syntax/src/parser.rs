@@ -509,6 +509,9 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.bump();
+            if self.at(RParen) {
+                self.error_expected("a parameter after `,`");
+            }
         }
         self.expect(RParen, "`)`");
         self.finish();
@@ -754,6 +757,9 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.bump();
+            if self.at(RParen) {
+                self.error_expected("an argument after `,`");
+            }
         }
         self.expect(RParen, "`)`");
         self.finish();

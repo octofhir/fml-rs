@@ -240,3 +240,22 @@ group B(source s, target t) {
     let last = groups[0].rules().last().unwrap();
     assert_eq!(last.sources().next().unwrap().path().unwrap().text(), "s.c");
 }
+
+#[test]
+fn rejects_a_trailing_comma_in_arguments_and_parameters() {
+    let parse = parse("group G(source src, target tgt,) {\n  src -> tgt.a = evaluate(src, );\n}\n");
+    let messages: Vec<&str> = parse
+        .diagnostics()
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages[0].contains("a parameter after `,`"),
+        "{messages:?}"
+    );
+    assert!(
+        messages[1].contains("an argument after `,`"),
+        "{messages:?}"
+    );
+}

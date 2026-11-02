@@ -9,12 +9,15 @@ use fml_syntax::ast::{
     self, AstNode, ConceptMap as ConceptMapNode, Expr, GroupTypeMode, ListMode, ModelMode,
     ParameterMode, TransformValue,
 };
+use std::collections::HashMap;
+
 use fml_syntax::{
-    Diagnostic, Direction, NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, TextRange, parse,
-    quote_fhirpath_string,
+    Diagnostic, Direction, LineIndex, NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode,
+    TextRange, parse, quote_fhirpath_string,
 };
 use serde_json::{Map, Value, json};
 
+use crate::metadata;
 use crate::model::{
     Constant, Dependent, Extension, Group, Input, Parameter, ParameterValue, Rule, Source,
     Structure, StructureMap, Target,
@@ -40,6 +43,55 @@ pub struct Compiled {
     pub map: StructureMap,
     /// Syntax errors first, then problems found while building the map.
     pub diagnostics: Vec<Diagnostic>,
+    /// Where each group, rule, source and target of the map is in the text.
+    pub locations: Locations,
+}
+
+/// The text range of each part of a compiled map, by its location in the StructureMap
+/// (`StructureMap.group[0].rule[2].source[0]`, as a debug trace names it). The rules a batch
+/// identity rule produces all point at that rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Locations {
+    ranges: HashMap<String, TextRange>,
+}
+
+/// A range in the text as the Mapping Language debug trace gives it: zero-based rows and
+/// zero-based columns in UTF-16 code units, the end exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start_row: u32,
+    pub start_column: u32,
+    pub end_row: u32,
+    pub end_column: u32,
+}
+
+impl Locations {
+    /// The byte range of the part at `position`.
+    pub fn range(&self, position: &str) -> Option<TextRange> {
+        self.ranges.get(position).copied()
+    }
+
+    /// The rows and columns of the part at `position` in `text`, the source the map was
+    /// compiled from.
+    pub fn span(&self, text: &str, index: &LineIndex, position: &str) -> Option<Span> {
+        let range = self.range(position)?;
+        let start = index.line_col(text, range.start());
+        let end = index.line_col(text, range.end());
+        Some(Span {
+            start_row: start.line,
+            start_column: start.col_utf16,
+            end_row: end.line,
+            end_column: end.col_utf16,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.ranges.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
 }
 
 impl Compiled {
@@ -64,22 +116,29 @@ pub fn compile(text: &str) -> Compiled {
 pub fn compile_tree(file: &ast::SourceFile) -> Compiled {
     let mut compiler = Compiler {
         diagnostics: Vec::new(),
+        locations: Locations::default(),
     };
     let map = compiler.file(file);
     Compiled {
         map,
         diagnostics: compiler.diagnostics,
+        locations: compiler.locations,
     }
 }
 
 struct Compiler {
     diagnostics: Vec<Diagnostic>,
+    locations: Locations,
 }
 
 impl Compiler {
     fn error(&mut self, node: &SyntaxNode, message: impl Into<String>) {
         self.diagnostics
             .push(Diagnostic::error(trimmed_range(node), message));
+    }
+
+    fn locate(&mut self, position: String, node: &SyntaxNode) {
+        self.locations.ranges.insert(position, trimmed_range(node));
     }
 
     fn warning(&mut self, node: &SyntaxNode, message: impl Into<String>) {
@@ -142,16 +201,30 @@ impl Compiler {
             });
         }
         for group in file.groups() {
-            let group = self.group(&group);
+            let position = format!("StructureMap.group[{}]", map.group.len());
+            let group = self.group(&group, &position);
             map.group.push(group);
         }
         map
     }
 
     fn metadata(&mut self, map: &mut StructureMap, metadata: &ast::Metadata) {
-        let Some(key) = metadata.key().map(|k| k.text()) else {
+        let Some(path) = metadata.key().map(|k| k.segments()) else {
             return;
         };
+        if path.first().is_some_and(|name| metadata::is_generic(name)) {
+            let literal = metadata.value().and_then(|literal| {
+                Some(metadata::Literal {
+                    kind: literal.kind()?,
+                    text: literal.value()?,
+                })
+            });
+            if let Err(message) = metadata::apply(&mut map.other, &path, literal) {
+                self.error(metadata.syntax(), message);
+            }
+            return;
+        }
+        let key = path.join(".");
         let value = metadata.value().and_then(|v| v.value());
         let field = match key.as_str() {
             "url" => &mut map.url,
@@ -275,7 +348,8 @@ impl Compiler {
         Value::Object(map)
     }
 
-    fn group(&mut self, node: &ast::Group) -> Group {
+    fn group(&mut self, node: &ast::Group, position: &str) -> Group {
+        self.locate(position.to_owned(), node.syntax());
         let mut group = Group {
             name: node.name().unwrap_or_default(),
             extends: node.extends(),
@@ -303,21 +377,50 @@ impl Compiler {
             });
         }
         if let Some(body) = node.body() {
-            group.rule = self.rules(&body);
+            group.rule = self.rules(&body, position);
         }
         group
     }
 
-    fn rules(&mut self, block: &ast::RuleBlock) -> Vec<Rule> {
+    fn rules(&mut self, block: &ast::RuleBlock, parent: &str) -> Vec<Rule> {
         let mut rules = Vec::new();
         for node in block.rules() {
-            self.rule(&node, &mut rules);
+            let first = rules.len();
+            self.rule(&node, &mut rules, parent);
+            self.locate_rules(&node, parent, first..rules.len());
         }
         rules
     }
 
+    /// Records where the rules `indices` of `parent`, compiled from `node`, are.
+    fn locate_rules(&mut self, node: &ast::Rule, parent: &str, indices: std::ops::Range<usize>) {
+        let batch = indices.len() > 1;
+        let sources: Vec<ast::Source> = node.sources().collect();
+        let targets: Vec<ast::Target> = node.targets().collect();
+        for index in indices {
+            let position = format!("{parent}.rule[{index}]");
+            self.locate(position.clone(), node.syntax());
+            for (k, source) in sources.iter().enumerate() {
+                let at = if batch {
+                    node.syntax()
+                } else {
+                    source.syntax()
+                };
+                self.locate(format!("{position}.source[{k}]"), at);
+            }
+            for (k, target) in targets.iter().enumerate() {
+                let at = if batch {
+                    node.syntax()
+                } else {
+                    target.syntax()
+                };
+                self.locate(format!("{position}.target[{k}]"), at);
+            }
+        }
+    }
+
     /// Compiles one rule into `out`; a batch identity rule produces one rule per field.
-    fn rule(&mut self, node: &ast::Rule, out: &mut Vec<Rule>) {
+    fn rule(&mut self, node: &ast::Rule, out: &mut Vec<Rule>, parent: &str) {
         let mut rule = Rule {
             documentation: leading_comments(node.syntax()),
             ..Rule::default()
@@ -332,7 +435,8 @@ impl Compiler {
 
         if let Some(dependent) = node.dependent() {
             if let Some(block) = dependent.rules() {
-                rule.rule = self.rules(&block);
+                let position = format!("{parent}.rule[{}]", out.len());
+                rule.rule = self.rules(&block, &position);
             }
             for invocation in dependent.invocations() {
                 rule.dependent.push(Dependent {

@@ -2,8 +2,8 @@
 //! (parse text with a format) and `unixToDateTime`, `unixToDate`, `unixToTime` (from a Unix
 //! timestamp), and `escape`.
 //!
-//! The IG describes the timestamp as "ticks since epoch" without naming the unit; it is read as
-//! a Unix timestamp, in seconds.
+//! The IG describes the timestamp as "ticks since epoch" without naming the unit; it is read in
+//! milliseconds since the Unix epoch, the reading the IG's editors settled on.
 //!
 //! Results are FHIR primitive values. They keep the precision of the input: `toDateTime('2024-05',
 //! 'yyyy-MM')` is `2024-05`, and a time zone appears only when the input had one, so nothing is
@@ -328,9 +328,11 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
-/// The date, time and zone of a Unix timestamp in seconds, in `timezone` (`+10:00`; UTC when
-/// absent, written `Z`).
-fn from_unix(seconds: i64, timezone: Option<&str>) -> Result<(String, String, String), String> {
+/// The date, time and zone of a Unix timestamp in milliseconds, in `timezone` (`+10:00`; UTC when
+/// absent, written `Z`). The time has milliseconds only when the timestamp has them.
+fn from_unix(millis: i64, timezone: Option<&str>) -> Result<(String, String, String), String> {
+    let seconds = millis.div_euclid(1000);
+    let fraction = millis.rem_euclid(1000);
     let (offset, zone) = match timezone {
         None | Some("Z") => (0, "Z".to_owned()),
         Some(text) => {
@@ -346,29 +348,32 @@ fn from_unix(seconds: i64, timezone: Option<&str>) -> Result<(String, String, St
     let local = seconds + offset;
     let (year, month, day) = civil_from_days(local.div_euclid(86_400));
     let in_day = local.rem_euclid(86_400);
-    let time = format!(
+    let mut time = format!(
         "{:02}:{:02}:{:02}",
         in_day / 3600,
         (in_day % 3600) / 60,
         in_day % 60
     );
+    if fraction != 0 {
+        time.push_str(&format!(".{fraction:03}"));
+    }
     Ok((format!("{year:04}-{month:02}-{day:02}"), time, zone))
 }
 
-/// `unixToDateTime(seconds [, timezone])`.
-pub fn unix_to_date_time(seconds: i64, timezone: Option<&str>) -> Result<String, String> {
-    let (date, time, zone) = from_unix(seconds, timezone)?;
+/// `unixToDateTime(milliseconds [, timezone])`.
+pub fn unix_to_date_time(millis: i64, timezone: Option<&str>) -> Result<String, String> {
+    let (date, time, zone) = from_unix(millis, timezone)?;
     Ok(format!("{date}T{time}{zone}"))
 }
 
-/// `unixToDate(seconds [, timezone])`.
-pub fn unix_to_date(seconds: i64, timezone: Option<&str>) -> Result<String, String> {
-    Ok(from_unix(seconds, timezone)?.0)
+/// `unixToDate(milliseconds [, timezone])`.
+pub fn unix_to_date(millis: i64, timezone: Option<&str>) -> Result<String, String> {
+    Ok(from_unix(millis, timezone)?.0)
 }
 
-/// `unixToTime(seconds [, timezone])`.
-pub fn unix_to_time(seconds: i64, timezone: Option<&str>) -> Result<String, String> {
-    Ok(from_unix(seconds, timezone)?.1)
+/// `unixToTime(milliseconds [, timezone])`.
+pub fn unix_to_time(millis: i64, timezone: Option<&str>) -> Result<String, String> {
+    Ok(from_unix(millis, timezone)?.1)
 }
 
 /// `escape(source, from, to)`: re-escapes text between `html`, `xml`, `json` and `none`.
@@ -494,12 +499,20 @@ mod tests {
     fn converts_unix_timestamps() {
         assert_eq!(unix_to_date_time(0, None).unwrap(), "1970-01-01T00:00:00Z");
         assert_eq!(
-            unix_to_date_time(1_714_570_200, Some("+10:00")).unwrap(),
+            unix_to_date_time(1_714_570_200_000, Some("+10:00")).unwrap(),
             "2024-05-01T23:30:00+10:00"
         );
-        assert_eq!(unix_to_date(951_782_400, None).unwrap(), "2000-02-29");
-        assert_eq!(unix_to_time(-1, None).unwrap(), "23:59:59");
-        assert_eq!(unix_to_date(-86_400, Some("-05:00")).unwrap(), "1969-12-30");
+        assert_eq!(
+            unix_to_date_time(1_714_570_200_250, None).unwrap(),
+            "2024-05-01T13:30:00.250Z"
+        );
+        assert_eq!(unix_to_date(951_782_400_000, None).unwrap(), "2000-02-29");
+        assert_eq!(unix_to_time(-1_000, None).unwrap(), "23:59:59");
+        assert_eq!(unix_to_time(-1, None).unwrap(), "23:59:59.999");
+        assert_eq!(
+            unix_to_date(-86_400_000, Some("-05:00")).unwrap(),
+            "1969-12-30"
+        );
     }
 
     #[test]

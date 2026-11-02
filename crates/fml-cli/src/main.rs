@@ -1,12 +1,16 @@
 //! `fml`: format and check FHIR Mapping Language files.
 
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fml_check::{CoreDefinitions, PackageDefinitions, Release};
-use fml_engine::{ConceptMapSet, Engine, FhirPathExpressions, MapSet, debug_parameters};
+use fml_engine::{
+    ConceptMapSet, DebugReport, Engine, FhirPathExpressions, MapSet, debug_parameters,
+};
+use fml_model::{Locations, Span};
 use fml_syntax::{Diagnostic, FormatError, FormatOptions, LineIndex, Severity, format, parse};
 use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
 
@@ -480,8 +484,21 @@ fn add_resource(
     Ok(())
 }
 
-/// A StructureMap from FML or JSON.
-fn load_map(path: &Path) -> Result<fml_model::StructureMap> {
+/// The FML text of the maps a run loaded, by canonical URL, for positions in the debug trace.
+#[derive(Default)]
+struct Sources {
+    by_url: HashMap<String, (String, LineIndex, Locations)>,
+}
+
+impl Sources {
+    fn span(&self, source: Option<&str>, position: &str) -> Option<Span> {
+        let (text, index, locations) = self.by_url.get(source.unwrap_or_default())?;
+        locations.span(text, index, position)
+    }
+}
+
+/// A StructureMap from FML or JSON; the text of an FML map goes into `sources`.
+fn load_map(path: &Path, sources: &mut Sources) -> Result<fml_model::StructureMap> {
     let text = std::fs::read_to_string(path)?;
     if path.extension().is_some_and(|e| e == "json") {
         let json: serde_json::Value = serde_json::from_str(&text)
@@ -498,6 +515,11 @@ fn load_map(path: &Path) -> Result<fml_model::StructureMap> {
         }
         return Err(format!("{}: the map has errors", path.display()).into());
     }
+    let url = compiled.map.url.clone().unwrap_or_default();
+    let index = LineIndex::new(&text);
+    sources
+        .by_url
+        .insert(url, (text, index, compiled.locations));
     Ok(compiled.map)
 }
 
@@ -517,7 +539,8 @@ fn run(
     how: RunOutput,
 ) -> Result<ExitCode> {
     let (definitions, package_resources) = definitions_with(release, packages)?;
-    let structure_map = load_map(map)?;
+    let mut sources = Sources::default();
+    let structure_map = load_map(map, &mut sources)?;
     let source: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(input)?)
         .map_err(|e| format!("{}: not JSON: {e}", input.display()))?;
     let mut maps = MapSet::new();
@@ -557,7 +580,7 @@ fn run(
                 )?;
                 continue;
             }
-            maps.add(load_map(&candidate)?);
+            maps.add(load_map(&candidate, &mut sources)?);
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -580,7 +603,14 @@ fn run(
             if how.debug
                 && let Some(trace) = &error.trace
             {
-                let parameters = debug_parameters(None, trace, Some(&error.message));
+                let report = DebugReport {
+                    result: None,
+                    trace,
+                    error: Some(&error),
+                    warnings: &[],
+                };
+                let parameters =
+                    debug_parameters(&report, &|source, position| sources.span(source, position));
                 write_output(output, &(serde_json::to_string_pretty(&parameters)? + "\n"))?;
             }
             eprintln!("error: {error}");
@@ -613,7 +643,13 @@ fn run(
     if how.debug
         && let Some(trace) = &transformed.trace
     {
-        result = debug_parameters(Some(&result), trace, None);
+        let report = DebugReport {
+            result: Some(&result),
+            trace,
+            error: None,
+            warnings: &transformed.warnings,
+        };
+        result = debug_parameters(&report, &|source, position| sources.span(source, position));
     }
     write_output(output, &(serde_json::to_string_pretty(&result)? + "\n"))?;
     Ok(ExitCode::SUCCESS)

@@ -91,7 +91,9 @@ real maps use: `map "url" = "name"`, unparenthesised `where`, embedded `conceptm
 
 **Compiler.** Follows `StructureMapUtilities` from org.hl7.fhir.core: generated rule names, the
 `vvv` variables of the simple copy form, batch identity rules, contained ConceptMaps, documentation
-from comments, and FHIRPath written exactly as the reference parser does. The two deliberate
+from comments, and FHIRPath written exactly as the reference parser does. It also builds the
+IG's metadata the reference compiler ignores (`/// jurisdiction.coding.code = 'AQ'`), and records
+where each group, rule, source and target is in the text. The two deliberate
 differences: whitespace-only string arguments (`append(a, ' ', b)`), which the reference JSON
 writer drops, and calendar durations (`5 days`), which it rewrites as `5 'days'`.
 `scripts/reference.sh` runs the reference compiler over the corpus to check this.
@@ -101,7 +103,9 @@ checked with the types they are called with, and the version-specific URLs of th
 maps (`http://hl7.org/fhir/4.0/StructureDefinition/Patient`). It reports missing elements, wrong
 type annotations, unknown variables, writes into source variables, unknown or abstract types in
 `create`, wrong transform arity and wrong group calls, and checks the element paths inside
-FHIRPath as warnings. The cross-version maps check clean. Profiles, extensions and logical
+FHIRPath as warnings. It reports what the IG requires of a map: `url` and `name`, groups that
+extend another with its parameters, typed default groups, unique names. The cross-version maps
+check without errors. Profiles, extensions and logical
 models come from FHIR packages: a folder, or `name@version` from the package registry.
 
 **Engine.** Groups and `extends`, source filters (type, `where`, `check`, `log`, list modes,
@@ -113,9 +117,14 @@ and the IG's date and time transforms (`toDateTime`, `toDate`, `toTime` with for
 their `unixTo…` forms). FHIRPath comes through a small trait; the `fhirpath` feature uses
 [octofhir-fhirpath](https://github.com/octofhir/fhirpath-rs). `translate` picks targets as the
 reference engine does and finds ConceptMaps by URL, by `url|version` and by the canonical URLs
-they replace. Resources a map creates outside the target are returned as `produced`. With tracing
-on, the engine records the `enter` / `step` / `exit` events the IG proposes for
-`$transform?debug=true`, with the position in the StructureMap and the variables in scope.
+they replace, or asks a terminology service (`$translate`) for the rest. Resources a map creates
+outside the target are returned as `produced`. Where the IG says more than the reference engine,
+it follows the IG: groups and nested rules after `then` both run, source `min..max` is enforced,
+`evaluate` with several values fills a repeating element. Limits on depth, rules, values and trace
+size, and a cancel flag, make it safe for maps from users. With tracing on, the engine records the
+trace of the IG's debug page for `$transform?debug=true`: events with depth, position, text range
+and variables, `traceStatus` (`complete`, `truncated`, `stopped`), and an `outcome` that says
+where a failure happened.
 
 ## Not yet
 

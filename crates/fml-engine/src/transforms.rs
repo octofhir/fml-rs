@@ -104,24 +104,134 @@ fn number(text: &str) -> Result<Value, String> {
         .map_err(|_| format!("`{text}` is not a number"))
 }
 
+/// The FHIR type a `cast` names. The default namespace is FHIR (transforms.md, "cast"); a
+/// FHIRPath system type becomes the FHIR primitive that holds it.
+pub fn cast_type(name: &str) -> String {
+    if let Some(name) = name.strip_prefix("FHIR.") {
+        return name.to_owned();
+    }
+    match name {
+        "System.Boolean" => "boolean",
+        "System.String" => "string",
+        "System.Integer" => "integer",
+        "System.Long" => "integer64",
+        "System.Decimal" => "decimal",
+        "System.Date" => "date",
+        "System.DateTime" => "dateTime",
+        "System.Time" => "time",
+        other => other,
+    }
+    .to_owned()
+}
+
 /// `cast(value, type)`: the value as a primitive of `type`, with the JSON representation FHIR uses
-/// for it.
+/// for it. The value must be valid for the type.
 pub fn cast(value: &str, type_name: &str) -> Result<Value, String> {
-    Ok(match type_name {
-        "boolean" => match value {
-            "true" => Value::Bool(true),
-            "false" => Value::Bool(false),
-            _ => return Err(format!("cannot cast `{value}` to boolean")),
-        },
-        "integer" | "positiveInt" | "unsignedInt" => value
-            .parse::<i64>()
-            .map(Value::from)
-            .map_err(|_| format!("cannot cast `{value}` to {type_name}"))?,
-        "decimal" => number(value)?,
-        "string" | "integer64" | "uri" | "base64Binary" | "instant" | "date" | "dateTime"
-        | "time" | "code" | "oid" | "id" | "markdown" | "uuid" | "url" | "canonical" => {
-            Value::String(value.to_owned())
+    let invalid = || format!("cannot cast `{value}` to {type_name}");
+    let valid = |ok: bool| {
+        if ok {
+            Ok(Value::String(value.to_owned()))
+        } else {
+            Err(invalid())
         }
-        other => return Err(format!("cast to {other} is not supported")),
-    })
+    };
+    match type_name {
+        "boolean" => match value {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(invalid()),
+        },
+        "integer" | "positiveInt" | "unsignedInt" => {
+            let number: i32 = value.trim().parse().map_err(|_| invalid())?;
+            let minimum = match type_name {
+                "positiveInt" => 1,
+                "unsignedInt" => 0,
+                _ => i32::MIN,
+            };
+            if number < minimum {
+                return Err(invalid());
+            }
+            Ok(Value::from(number))
+        }
+        "integer64" => valid(value.trim().parse::<i64>().is_ok()),
+        "decimal" => number(value.trim()).map_err(|_| invalid()),
+        "date" => valid(is_date(value)),
+        "dateTime" => valid(is_date_time(value)),
+        "instant" => valid(is_instant(value)),
+        "time" => valid(is_time(value)),
+        "id" => valid(
+            (1..=64).contains(&value.len())
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'),
+        ),
+        "code" => valid(!value.is_empty() && value.trim() == value && !value.contains("  ")),
+        "string" | "markdown" | "uri" | "url" | "canonical" | "oid" | "uuid" | "base64Binary" => {
+            valid(!value.is_empty())
+        }
+        other => Err(format!("cast to {other} is not supported")),
+    }
+}
+
+/// `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+fn is_date(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('-').collect();
+    let digits =
+        |part: &str, len: usize| part.len() == len && part.bytes().all(|b| b.is_ascii_digit());
+    let in_range = |part: &str, low: u32, high: u32| {
+        part.parse::<u32>().is_ok_and(|n| (low..=high).contains(&n))
+    };
+    match parts.as_slice() {
+        [year] => digits(year, 4),
+        [year, month] => digits(year, 4) && digits(month, 2) && in_range(month, 1, 12),
+        [year, month, day] => {
+            digits(year, 4)
+                && digits(month, 2)
+                && in_range(month, 1, 12)
+                && digits(day, 2)
+                && in_range(day, 1, 31)
+        }
+        _ => false,
+    }
+}
+
+/// `hh:mm:ss` with optional fractional seconds.
+fn is_time(text: &str) -> bool {
+    let (clock, fraction) = match text.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (text, None),
+    };
+    let parts: Vec<&str> = clock.split(':').collect();
+    let field =
+        |part: &str, high: u32| part.len() == 2 && part.parse::<u32>().is_ok_and(|n| n <= high);
+    matches!(parts.as_slice(), [h, m, s] if field(h, 23) && field(m, 59) && field(s, 60))
+        && fraction.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `Z` or `±hh:mm`.
+fn is_zone(text: &str) -> bool {
+    text == "Z"
+        || (text.len() == 6
+            && matches!(&text[..1], "+" | "-")
+            && &text[3..4] == ":"
+            && text[1..3].parse::<u32>().is_ok_and(|h| h <= 14)
+            && text[4..].parse::<u32>().is_ok_and(|m| m <= 59))
+}
+
+/// A full date and time with a zone.
+fn is_instant(text: &str) -> bool {
+    let Some((date, rest)) = text.split_once('T') else {
+        return false;
+    };
+    let split = rest.find(['Z', '+', '-']).unwrap_or(rest.len());
+    date.len() == 10 && is_date(date) && is_time(&rest[..split]) && is_zone(&rest[split..])
+}
+
+/// A date, or a full date with a time and a zone.
+fn is_date_time(text: &str) -> bool {
+    if text.contains('T') {
+        is_instant(text)
+    } else {
+        is_date(text)
+    }
 }

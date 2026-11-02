@@ -21,25 +21,38 @@ runs maps over FHIR JSON, the way the HL7 reference engine does.
   Not yet: `dateOp`, which the IG lists without defining.
 - **Produced resources.** Resources a map creates outside the target (a `create` with no target
   element) come back in `produced`, ready for a Bundle.
-- **Debug trace.** `with_trace(true)` records the `enter` / `step` / `exit` events the IG proposes
-  for `$transform?debug=true`: depth, the position in the StructureMap
-  (`StructureMap.group[0].rule[2]`), and the variables in scope. `debug_parameters` writes them as
-  the `Parameters` response, also when the transform fails.
+- **Follows the IG where it says more than the reference engine.** Named groups and nested rules
+  after `then` both run; a source's `min..max` is enforced; `evaluate` with several values makes
+  one target per value; a group name in several imported maps is an error; `cast` takes `FHIR.`
+  and `System.` types and checks the value.
+- **Debug trace.** `with_trace(true)` records the trace of the IG's debug page for
+  `$transform?debug=true`: `enter` / `step` / `exit` events with their depth, the position in the
+  StructureMap (`StructureMap.group[0].rule[2]`) and the variables in scope. `debug_parameters`
+  writes the `Parameters` response with `traceStatus` (`complete`, `truncated`, `stopped`), the
+  text range of each event (rows and UTF-16 columns, from `fml_model::Locations`), and an
+  `outcome` with the failure and where it happened, why events were left out, and values left out
+  of the result.
+- **Safe to run on maps you did not write.** `Limits` bound the group depth, the rules run, the
+  values created and the size of the trace; a flag cancels a run. Failures say what kind they are
+  (`ErrorKind`) and where (`position`).
 - **Pluggable.** Structure definitions come from [fml-check](https://crates.io/crates/fml-check)'s
   `Definitions`, FHIRPath from an `Expressions` implementation (the `fhirpath` feature uses
   [octofhir-fhirpath](https://crates.io/crates/octofhir-fhirpath)), imported maps from a
-  `MapResolver`, ConceptMaps from a `ConceptMapResolver`. ConceptMaps are found by URL and by the
-  canonical URLs they replace.
+  `MapResolver`, ConceptMaps from a `ConceptMapResolver`, and any other ConceptMap through a
+  `TranslateService` (`$translate` on a terminology server). ConceptMaps are found by URL and by
+  the canonical URLs they replace. `uuid()` and new ids come from an `IdGenerator`
+  (`SequentialIds` makes runs repeatable).
 
 ```rust
 use fml_check::{CoreDefinitions, Release};
-use fml_engine::{ConceptMapSet, Engine, FhirPathExpressions, MapSet};
+use fml_engine::{ConceptMapSet, Engine, FhirPathExpressions, Limits, MapSet};
 
 let definitions = CoreDefinitions::new(Release::R5);
 let expressions = FhirPathExpressions::new(Release::R5).await?;
 let output = Engine::new(&definitions, expressions)
     .with_maps(&maps)                 // MapSet: StructureMaps for `imports`
     .with_concept_maps(&concept_maps) // ConceptMapSet: for translate()
+    .with_limits(Limits::default())   // depth, rules, values, trace size
     .transform(&map, &input)
     .await?;
 println!("{}", output.target);        // also: output.produced, output.warnings

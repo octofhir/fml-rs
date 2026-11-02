@@ -12,10 +12,14 @@ It follows every rule with the types of its variables and reports:
 - unknown or abstract types in `create('Type')`, and transforms with the wrong number of arguments;
 - calls to groups that are not declared, or with the wrong number of arguments;
 - element paths inside FHIRPath (`where`, `check`, `(…)`), as warnings, since a wrong path there
-  gives an empty result instead of an error.
+  gives an empty result instead of an error;
+- what the Mapping Language IG requires of a map: a `url` and a `name`, groups that extend another
+  with its parameters (mode, name and type), unique constant names; and, as warnings because the
+  HL7 maps themselves break them, default groups that are not a typed source and target, rule
+  names used twice, and reserved keywords used as names.
 
 Groups without parameter types are checked with the types they are called with, which is how the
-cross-version maps are written. Those maps (R2–R5) check clean; on other public maps it found a
+cross-version maps are written. Those maps (R2–R5) check without errors; on other public maps it found a
 typo in the FHIR test cases, a parameter a group uses without declaring it, and a condition that is
 never true because it reads `system` and `code` from a CodeableConcept instead of its codings.
 

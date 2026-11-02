@@ -57,6 +57,11 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// The number of nodes created.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     fn push(&mut self, node: Node) -> NodeId {
         self.nodes.push(node);
         NodeId(self.nodes.len() - 1)
@@ -433,6 +438,23 @@ impl Tree {
                 values: vec![child],
             }),
         }
+    }
+
+    /// Moves `value` within the repeating element `name` of `id`: to `index`, or to the end.
+    pub fn move_value(&mut self, id: NodeId, name: &str, value: NodeId, index: Option<usize>) {
+        let Some(property) = self
+            .properties_mut(id)
+            .iter_mut()
+            .find(|p| p.name == name && p.many)
+        else {
+            return;
+        };
+        let Some(at) = property.values.iter().position(|&v| v == value) else {
+            return;
+        };
+        property.values.remove(at);
+        let index = index.map_or(property.values.len(), |i| i.min(property.values.len()));
+        property.values.insert(index, value);
     }
 
     /// Copies the content of `from` into `to`, as when a value is assigned to an existing target.

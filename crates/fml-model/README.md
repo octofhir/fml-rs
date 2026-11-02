@@ -13,6 +13,11 @@ compile FML to a StructureMap, and print a StructureMap back as FML.
   corpus; it also reads maps built by older IG Publisher versions.
 - **R4 and R5.** `to_r4` writes the R4 shape (`dependent.variable`, `defaultValue[x]`,
   `contextType`, ConceptMap `equivalence`) and reports what R4 cannot hold; `from_json` reads both.
+- **All the IG's metadata.** `/// jurisdiction.coding.code = 'AQ'`: sub-properties, repeats and
+  complex elements, for `identifier`, `contact`, `useContext`, `jurisdiction` and the rest.
+- **Locations.** `compiled.locations` gives the text range of every group, rule, source and target
+  by its place in the StructureMap (`StructureMap.group[0].rule[2].source[0]`), in rows and UTF-16
+  columns as the IG's debug trace wants them.
 - Elements the model does not name are kept, so reading and writing a StructureMap loses nothing.
 
 ```rust

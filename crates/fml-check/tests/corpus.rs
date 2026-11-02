@@ -1,11 +1,12 @@
-//! Type-checks the corpus. The cross-version maps (R2–R5) are expected to be clean: anything
-//! reported there is a checker bug, so it fails the test. Other maps are summarised.
+//! Type-checks the corpus. The cross-version maps (R2–R5) are expected to have no errors: an
+//! error reported there is a checker bug, so it fails the test. Warnings, and anything reported
+//! for other maps, are summarised.
 #![cfg(feature = "fhirschema")]
 
 use std::path::{Path, PathBuf};
 
 use fml_check::{CoreDefinitions, Release, check};
-use fml_syntax::{LineIndex, parse};
+use fml_syntax::{LineIndex, Severity, parse};
 
 fn corpus_roots() -> Vec<PathBuf> {
     match std::env::var_os("FML_CORPUS") {
@@ -60,7 +61,9 @@ fn checks_the_corpus() {
         for diagnostic in check(&parse.tree(), &definitions) {
             let at = index.line_col(&text, diagnostic.range.start());
             let line = format!("{}:{}: {}", path.display(), at.line + 1, diagnostic.message);
-            if path.to_string_lossy().contains("fhir-cross-version") {
+            if path.to_string_lossy().contains("fhir-cross-version")
+                && diagnostic.severity == Severity::Error
+            {
                 regressions.push(line);
             } else {
                 reported.push(line);

@@ -20,6 +20,40 @@ pub fn check(file: &ast::SourceFile, definitions: &dyn Definitions) -> Vec<Diagn
     diagnostics
 }
 
+/// The reserved keywords of the mapping language (fml.md, "Reserved keywords").
+const RESERVED: &[&str] = &[
+    "map",
+    "uses",
+    "as",
+    "alias",
+    "imports",
+    "group",
+    "extends",
+    "default",
+    "where",
+    "check",
+    "log",
+    "then",
+    "true",
+    "false",
+    "types",
+    "type",
+    "first",
+    "not_first",
+    "last",
+    "not_last",
+    "only_one",
+    "share",
+    "single",
+    "source",
+    "target",
+    "queried",
+    "produced",
+    "conceptmap",
+    "prefix",
+    "let",
+];
+
 /// How deep untyped groups are followed into the groups they call.
 const MAX_CALL_DEPTH: usize = 32;
 
@@ -80,12 +114,20 @@ impl<'a> Checker<'a> {
         self.report(Severity::Error, trimmed_range(node), message.into());
     }
 
+    fn warning(&mut self, node: &SyntaxNode, message: impl Into<String>) {
+        self.report(Severity::Warning, trimmed_range(node), message.into());
+    }
+
     fn error_at(&mut self, range: TextRange, message: impl Into<String>) {
         self.report(Severity::Error, range, message.into());
     }
 
     fn run(&mut self) {
         self.declarations();
+        self.identity();
+        self.names();
+        self.group_signatures();
+        self.rule_names();
         let groups: Vec<ast::Group> = self.file.groups().collect();
         for group in &groups {
             let types = group
@@ -145,6 +187,168 @@ impl<'a> Checker<'a> {
                 self.error(
                     group.syntax(),
                     format!("group `{extends}` is not declared and nothing is imported"),
+                );
+            }
+        }
+    }
+
+    /// Constant names must be unique in the file, and no name the map defines may be a reserved
+    /// keyword (fml.md, "Constants" and "Reserved keywords").
+    fn names(&mut self) {
+        let mut constants: HashSet<String> = HashSet::new();
+        for constant in self.file.constants() {
+            let Some(name) = constant.name() else {
+                continue;
+            };
+            if !constants.insert(name.clone()) {
+                self.error(
+                    constant.syntax(),
+                    format!("constant `{name}` is declared twice"),
+                );
+            }
+            if RESERVED.contains(&name.as_str()) {
+                self.warning(constant.syntax(), format!("`{name}` is a reserved keyword"));
+            }
+        }
+        for group in self.file.groups() {
+            if let Some(name) = group.name()
+                && RESERVED.contains(&name.as_str())
+            {
+                self.warning(group.syntax(), format!("`{name}` is a reserved keyword"));
+            }
+            for parameter in group.parameters() {
+                if let Some(name) = parameter.name()
+                    && RESERVED.contains(&name.as_str())
+                {
+                    self.warning(
+                        parameter.syntax(),
+                        format!("`{name}` is a reserved keyword"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// `url` and `name` SHALL be given (fml.md, "Metadata"), in metadata or a `map` line.
+    fn identity(&mut self) {
+        let declaration = self.file.map_declaration();
+        let metadata: Vec<String> = self
+            .file
+            .metadata()
+            .filter_map(|m| m.key().map(|k| k.text()))
+            .collect();
+        let has = |key: &str| metadata.iter().any(|k| k == key);
+        let url = has("url") || declaration.as_ref().is_some_and(|d| d.url().is_some());
+        let name = has("name") || declaration.as_ref().is_some_and(|d| d.name().is_some());
+        let at = TextRange::empty(0.into());
+        if !url {
+            self.error_at(at, "the map has no `url`: add `/// url = '…'`");
+        }
+        if !name {
+            self.error_at(at, "the map has no `name`: add `/// name = '…'`");
+        }
+    }
+
+    /// The parameters a group declares, as (mode, name, type).
+    fn signature(group: &ast::Group) -> Vec<(Mode, String, Option<String>)> {
+        group
+            .parameters()
+            .map(|parameter| {
+                let mode = match parameter.mode() {
+                    Some(ParameterMode::Target) => Mode::Target,
+                    _ => Mode::Source,
+                };
+                let type_name = parameter.type_annotation().and_then(|t| t.type_name());
+                (mode, parameter.name().unwrap_or_default(), type_name)
+            })
+            .collect()
+    }
+
+    /// A group that extends another SHALL have the other's parameters, by mode, name and type
+    /// (fml.md, "Groups"); a default group SHALL have a typed source and a typed target, in that
+    /// order.
+    fn group_signatures(&mut self) {
+        let groups: Vec<ast::Group> = self.file.groups().collect();
+        for group in &groups {
+            let own = Self::signature(group);
+            if let Some(base) = group
+                .extends()
+                .and_then(|name| self.groups.get(&name).cloned())
+            {
+                let base_name = base.name().unwrap_or_default();
+                for (mode, name, type_name) in Self::signature(&base) {
+                    let matching = own.iter().find(|(_, own_name, _)| *own_name == name);
+                    let problem = match matching {
+                        None => Some(format!("has no parameter `{name}`")),
+                        Some((own_mode, _, _)) if *own_mode != mode => {
+                            Some(format!("has `{name}` with another mode"))
+                        }
+                        Some((_, _, own_type))
+                            if type_name.is_some()
+                                && own_type.is_some()
+                                && *own_type != type_name =>
+                        {
+                            Some(format!(
+                                "has `{name}` as `{}`, not `{}`",
+                                own_type.as_deref().unwrap_or_default(),
+                                type_name.as_deref().unwrap_or_default()
+                            ))
+                        }
+                        _ => None,
+                    };
+                    if let Some(problem) = problem {
+                        self.error(
+                            group.syntax(),
+                            format!(
+                                "group `{}` extends `{base_name}` but {problem}; it needs the parameters of `{base_name}`",
+                                group.name().unwrap_or_default()
+                            ),
+                        );
+                    }
+                }
+            }
+            if group.type_mode().is_some() {
+                let valid = matches!(
+                    own.as_slice(),
+                    [(Mode::Source, _, Some(_)), (Mode::Target, _, Some(_))]
+                );
+                if !valid {
+                    self.warning(
+                        group.syntax(),
+                        format!(
+                            "default group `{}` needs two typed parameters, a source and then a target; it is not used as a default",
+                            group.name().unwrap_or_default()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Rule names given in the map must be unique within it (fml.md, "Transform Rules").
+    fn rule_names(&mut self) {
+        let mut rules: Vec<ast::Rule> = Vec::new();
+        let mut pending: Vec<ast::Rule> = self
+            .file
+            .groups()
+            .flat_map(|g| g.rules().collect::<Vec<_>>())
+            .collect();
+        while let Some(rule) = pending.pop() {
+            if let Some(block) = rule.dependent().and_then(|d| d.rules()) {
+                pending.extend(block.rules());
+            }
+            rules.push(rule);
+        }
+        rules.sort_by_key(|rule| rule.syntax().text_range().start());
+        let mut seen: HashSet<String> = HashSet::new();
+        for rule in rules {
+            let Some(name) = rule.name() else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                self.warning(
+                    rule.syntax(),
+                    format!("rule name `{name}` is used twice in the map"),
                 );
             }
         }

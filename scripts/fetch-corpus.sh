@@ -22,4 +22,11 @@ if [ ! -d corpus/r4-examples ]; then
   unzip -q corpus/r4-examples.zip -d corpus/r4-examples
   rm corpus/r4-examples.zip
 fi
+# The R5 specification examples: what the converted R4 examples are compared with.
+if [ ! -d corpus/r5-examples ]; then
+  mkdir -p corpus/r5-examples
+  curl -sfL -o corpus/r5-examples.zip https://hl7.org/fhir/R5/examples-json.zip
+  unzip -q corpus/r5-examples.zip -d corpus/r5-examples
+  rm corpus/r5-examples.zip
+fi
 find corpus \( -name '*.fml' -o -name '*.map' \) -not -path '*/node_modules/*' | wc -l | xargs echo "maps:"

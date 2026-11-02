@@ -4,7 +4,9 @@
 //! do not exist on the type they are read from or written to, a type annotation that is not one of
 //! the element's types, unknown variables, writes into source variables, unknown or abstract types
 //! in `create`, transforms with the wrong number of arguments, and calls to groups that are not
-//! declared or take a different number of arguments.
+//! declared or take a different number of arguments. It also reports what the Mapping Language IG
+//! requires of a map: a `url` and a `name`, groups that extend another with its parameters,
+//! default groups with a typed source and target, and rule names used once.
 //!
 //! Groups without parameter types, such as the per-backbone groups of the cross-version maps, are
 //! checked with the types they are called with.
@@ -14,6 +16,8 @@
 //! use fml_check::{CoreDefinitions, Release, check};
 //!
 //! let parse = fml_syntax::parse(r#"
+//! /// url = 'http://example.org/StructureMap/Copy'
+//! /// name = 'Copy'
 //! uses "http://hl7.org/fhir/StructureDefinition/Patient" as source
 //! uses "http://hl7.org/fhir/StructureDefinition/Patient" as target
 //!

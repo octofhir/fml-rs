@@ -20,12 +20,13 @@
 mod canonical;
 mod compile;
 pub mod flavor;
+mod metadata;
 pub mod model;
 mod print;
 
 pub use compile::{
-    AUTO_VARIABLE, BATCH_UNNAMED_PREFIX, Compiled, REFERENCES_CONTAINED_EXTENSION,
-    SOURCE_ELEMENT_EXTENSION, TARGET_ELEMENT_EXTENSION, compile, compile_tree, make_id,
+    AUTO_VARIABLE, BATCH_UNNAMED_PREFIX, Compiled, Locations, REFERENCES_CONTAINED_EXTENSION,
+    SOURCE_ELEMENT_EXTENSION, Span, TARGET_ELEMENT_EXTENSION, compile, compile_tree, make_id,
     source_path,
 };
 pub use flavor::{R4Map, from_json, to_r4};

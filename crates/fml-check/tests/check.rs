@@ -4,7 +4,18 @@
 use fml_check::{CoreDefinitions, Release, check};
 use fml_syntax::{LineIndex, parse};
 
+/// Diagnostics as `line:column message`. Maps without a `url` get one at the end, so the lines
+/// of the source stay where they are.
 fn diagnostics(source: &str, release: Release) -> String {
+    let with_identity;
+    let source = if source.contains("/// url") {
+        source
+    } else {
+        with_identity = format!(
+            "{source}\n/// url = 'http://example.org/StructureMap/test'\n/// name = 'test'\n"
+        );
+        &with_identity
+    };
     let parse = parse(source);
     assert!(parse.diagnostics().is_empty(), "{:?}", parse.diagnostics());
     let index = LineIndex::new(source);
@@ -131,5 +142,48 @@ group Main(source src : Account, target tgt : Account) {
     5:58 `CodeableConcept` has no element `system`
     5:75 `CodeableConcept` has no element `code`
     9:26 `code` has no element `statuss`
+    ");
+}
+
+#[test]
+fn reports_what_the_ig_requires_of_names_and_signatures() {
+    let source = r#"/// url = 'http://example.org/StructureMap/x'
+uses "http://hl7.org/fhir/StructureDefinition/Patient" alias P as source
+uses "http://hl7.org/fhir/StructureDefinition/Basic" alias B as target
+
+group Base(source src : P, target tgt : B) {
+  src.id as v -> tgt.id = v "id";
+}
+
+group Derived(source src : P, target out : B, source extra) extends Base {
+  src.id as v -> out.id = v "id";
+}
+
+group Typed(source src : P, target tgt : string) extends Base <<types>> {
+}
+
+group Default(target tgt : B, source src : P) <<type+>> {
+}
+"#;
+    insta::assert_snapshot!(diagnostics(source, Release::R5), @r"
+    1:1 the map has no `name`: add `/// name = '…'`
+    9:1 group `Derived` extends `Base` but has no parameter `tgt`; it needs the parameters of `Base`
+    10:3 rule name `id` is used twice in the map
+    13:1 group `Typed` extends `Base` but has `tgt` as `string`, not `B`; it needs the parameters of `Base`
+    16:1 default group `Default` needs two typed parameters, a source and then a target; it is not used as a default
+    ");
+}
+
+#[test]
+fn reports_repeated_constants_and_reserved_names() {
+    let source = r#"let base = 'a';
+let base = 'b';
+
+group G(source src, target type) {
+}
+"#;
+    insta::assert_snapshot!(diagnostics(source, Release::R5), @r"
+    2:1 constant `base` is declared twice
+    4:21 `type` is a reserved keyword
     ");
 }
