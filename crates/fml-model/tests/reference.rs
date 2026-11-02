@@ -15,25 +15,15 @@ fn reference_dir() -> PathBuf {
     }
 }
 
-/// Known, deliberate differences, applied to our output before comparing.
-///
-/// - The reference JSON writer drops string values that are only whitespace, so
-///   `append(a, ' ', b)` loses its separator there. We keep it.
-/// - The reference compiler writes the calendar duration `5 days` as `5 'days'`, a quantity with
-///   the (non-UCUM) unit `days`, which FHIRPath does not treat as the same thing. We keep the
-///   calendar duration.
+/// The known, deliberate difference, applied to our output before comparing: the reference
+/// compiler writes the calendar duration `5 days` as `5 'days'`, a quantity with the (non-UCUM)
+/// unit `days`, which FHIRPath does not treat as the same thing. We keep the calendar duration.
+/// (Whitespace-only strings such as the separator in `append(a, ' ', b)`, which older reference
+/// JSON writers dropped, are kept by both now.)
 fn align_with_reference(value: &mut Value) {
     match value {
         Value::String(text) => *text = quote_calendar_units(text),
         Value::Object(map) => {
-            if map.len() == 1
-                && map
-                    .get("valueString")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| s.trim().is_empty())
-            {
-                map.clear();
-            }
             map.values_mut().for_each(align_with_reference);
         }
         Value::Array(items) => items.iter_mut().for_each(align_with_reference),

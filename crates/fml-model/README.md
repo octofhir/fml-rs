@@ -6,9 +6,9 @@ compile FML to a StructureMap, and print a StructureMap back as FML.
 - **Matches the HL7 reference compiler.** The StructureMap JSON is the one `StructureMapUtilities`
   in org.hl7.fhir.core builds, byte for byte, on all 1,659 maps we test against: generated rule
   names, the variables of the simple copy form, batch identity rules, contained ConceptMaps,
-  documentation from comments, FHIRPath in the reference parser's canonical form. Two documented
-  differences keep what the map says: whitespace-only strings, which the reference JSON writer
-  drops, and calendar durations (`5 days`), which it rewrites as `5 'days'`.
+  documentation from comments, FHIRPath in the reference parser's canonical form. One documented
+  difference keeps what the map says: calendar durations (`5 days`), which the reference
+  compiler rewrites as `5 'days'`.
 - **Prints FML back.** The printed map compiles to the same StructureMap, for every map in the
   corpus; it also reads maps built by older IG Publisher versions.
 - **R4 and R5.** `to_r4` writes the R4 shape (`dependent.variable`, `defaultValue[x]`,

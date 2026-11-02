@@ -93,9 +93,8 @@ real maps use: `map "url" = "name"`, unparenthesised `where`, embedded `conceptm
 `vvv` variables of the simple copy form, batch identity rules, contained ConceptMaps, documentation
 from comments, and FHIRPath written exactly as the reference parser does. It also builds the
 IG's metadata the reference compiler ignores (`/// jurisdiction.coding.code = 'AQ'`), and records
-where each group, rule, source and target is in the text. The two deliberate
-differences: whitespace-only string arguments (`append(a, ' ', b)`), which the reference JSON
-writer drops, and calendar durations (`5 days`), which it rewrites as `5 'days'`.
+where each group, rule, source and target is in the text. The one deliberate difference:
+calendar durations (`5 days`), which the reference compiler rewrites as `5 'days'`.
 `scripts/reference.sh` runs the reference compiler over the corpus to check this.
 
 **Type checker.** Follows each rule with the types of its variables, including untyped groups,
