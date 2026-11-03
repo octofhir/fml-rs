@@ -23,9 +23,9 @@ fhirpath = [
 ]
 
 [dependencies]
-fml-syntax = { path = "../fml-syntax", version = "0.2.0" }
-fml-model = { path = "../fml-model", version = "0.2.0" }
-fml-check = { path = "../fml-check", version = "0.2.0" }
+fml-syntax = { path = "../fml-syntax", version = "0.2.1" }
+fml-model = { path = "../fml-model", version = "0.2.1" }
+fml-check = { path = "../fml-check", version = "0.2.1" }
 serde_json = { version = "1", features = ["preserve_order"] }
 uuid = { version = "1", features = ["v4"] }
 octofhir-fhirpath = { version = "0.5.1", optional = true }
@@ -33,5 +33,5 @@ octofhir-fhirschema = { version = "0.3.33", optional = true }
 octofhir-fhir-model = { version = "0.1.17", optional = true }
 
 [dev-dependencies]
-fml-check = { path = "../fml-check", version = "0.2.0", features = ["fhirschema"] }
+fml-check = { path = "../fml-check", version = "0.2.1", features = ["fhirschema"] }
 tokio = { version = "1", features = ["macros", "rt"] }
