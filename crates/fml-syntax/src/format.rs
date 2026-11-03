@@ -77,7 +77,7 @@ fn uses_crlf(text: &str) -> bool {
         .is_some_and(|index| text[..index].ends_with('\r'))
 }
 
-/// Formats a parsed tree without checking it first. Prefer [`format`], which refuses trees with
+/// Formats a parsed tree without checking it first. Prefer [`format()`], which refuses trees with
 /// syntax errors and verifies the result.
 pub fn format_tree(file: &SourceFile, options: &FormatOptions) -> String {
     let mut formatter = Formatter {

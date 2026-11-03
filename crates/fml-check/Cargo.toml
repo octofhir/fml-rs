@@ -18,8 +18,8 @@ default = []
 fhirschema = ["dep:octofhir-fhirschema", "dep:serde_json"]
 
 [dependencies]
-fml-syntax = { path = "../fml-syntax", version = "0.2.1" }
-octofhir-fhirschema = { version = "0.3.33", optional = true }
+fml-syntax = { path = "../fml-syntax", version = "0.2.2" }
+octofhir-fhirschema = { version = "0.3.35", default-features = false, optional = true }
 serde_json = { version = "1", optional = true }
 
 [dev-dependencies]

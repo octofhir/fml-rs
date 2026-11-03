@@ -1,0 +1,13 @@
+[package]
+name = "fml-offline-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+fml-check = { path = "../../crates/fml-check", features = ["fhirschema"] }
+fml-engine = { path = "../../crates/fml-engine", features = ["fhirpath"] }
+futures = "0.3"
+serde_json = "1"

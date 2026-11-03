@@ -37,3 +37,20 @@ jobs:
       - run: cargo test -p fml-engine --features fhirpath --test cross_version -- --nocapture
       - run: scripts/reference.sh
       - run: cargo test -p fml-model --test reference -- --nocapture
+
+  offline-libraries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check independent embedded-schema and FHIRPath consumers
+        run: cargo run --manifest-path tests/offline-consumer/Cargo.toml
+      - name: Reject HTTP and package loading in library dependencies
+        shell: bash
+        run: |
+          cargo tree --manifest-path tests/offline-consumer/Cargo.toml --edges normal,build --prefix none > library-deps.txt
+          if grep -E '^(octofhir-canonical-manager|reqwest|hyper|rustls|native-tls|openssl-sys|clap|sqlx|rusqlite) v' library-deps.txt; then
+            echo "HTTP or package loading leaked into the library"
+            exit 1
+          fi

@@ -35,6 +35,14 @@ Every number below is checked by a test in this repository against public data, 
 | **Finds mistakes** | Its type checker found a typo in the FHIR test cases, a group in the R6 maps that uses a parameter it never declares, and a condition there that can never be true. |
 | **Round-trips** | FML → StructureMap → FML → StructureMap gives back the same StructureMap for every map, and the formatter never changes a map's meaning or loses a comment. |
 
+## Library dependencies
+
+The parser, model and default engine stay independent of HTTP and package loading.
+`fml-check` with `fhirschema` and `fml-engine` with `fhirpath` use embedded FHIR
+schemas without enabling HTTP providers. All R4, R4B, R5 and R6 definitions remain
+available. The CLI keeps package downloads and SQLite through its explicit
+package-manager integration.
+
 ## Install
 
 ```sh
