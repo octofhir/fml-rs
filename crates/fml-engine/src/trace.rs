@@ -34,6 +34,9 @@ pub struct TraceVariable {
     pub value: Value,
     /// The FHIR type, where known: `Patient`, `string`, `QuestionnaireResponse.item`.
     pub data_type: Option<String>,
+    /// Where the value is in the input, for values that come from it: a FHIRPath of names and
+    /// indexes (`Patient.name[0].given[1]`).
+    pub path: Option<String>,
 }
 
 /// One evaluation unit.
@@ -247,6 +250,9 @@ fn variable_parameter(variable: &TraceVariable) -> Value {
     }
     if let Some(data_type) = data_type {
         parts.push(json!({ "name": "dataType", "valueString": data_type }));
+    }
+    if let Some(path) = &variable.path {
+        parts.push(json!({ "name": "path", "valueString": path }));
     }
     json!({ "name": "variable", "part": parts })
 }

@@ -54,9 +54,36 @@ struct Slot {
 #[derive(Debug, Default, Clone)]
 pub struct Tree {
     nodes: Vec<Node>,
+    /// Where each node of the input is in it, as a FHIRPath (`Patient.name[0].given[1]`); only
+    /// when [`record_paths`](Self::record_paths) was called.
+    paths: std::collections::HashMap<NodeId, String>,
 }
 
 impl Tree {
+    /// Records the location of every node under `root` (the input), starting with `root_name`
+    /// (`Patient`): repeating elements get an index, choices their base name (`value`).
+    pub fn record_paths(&mut self, root: NodeId, root_name: &str) {
+        let mut pending = vec![(root, root_name.to_owned())];
+        while let Some((node, path)) = pending.pop() {
+            for property in self.properties(node) {
+                for (index, &child) in property.values.iter().enumerate() {
+                    let child_path = if property.many {
+                        format!("{path}.{}[{index}]", property.name)
+                    } else {
+                        format!("{path}.{}", property.name)
+                    };
+                    pending.push((child, child_path));
+                }
+            }
+            self.paths.insert(node, path);
+        }
+    }
+
+    /// The location of an input node, if [`record_paths`](Self::record_paths) saw it.
+    pub fn path(&self, id: NodeId) -> Option<&str> {
+        self.paths.get(&id).map(String::as_str)
+    }
+
     /// The number of nodes created.
     pub fn len(&self) -> usize {
         self.nodes.len()

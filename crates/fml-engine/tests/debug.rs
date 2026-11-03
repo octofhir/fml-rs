@@ -272,3 +272,36 @@ group Main(source src : Patient, target tgt : Basic) {
         .unwrap();
     assert_eq!(left_out.warnings.len(), 1);
 }
+
+#[tokio::test]
+async fn trace_variables_from_the_input_say_where_they_are() {
+    let compiled = fml_model::compile(MAP);
+    let definitions = CoreDefinitions::new(Release::R5);
+    let trace = Engine::new(&definitions, NoExpressions)
+        .with_trace(true)
+        .transform(&compiled.map, &patient())
+        .await
+        .unwrap()
+        .trace
+        .unwrap();
+    let path_of = |name: &str, family: &str| {
+        trace
+            .events
+            .iter()
+            .flat_map(|event| &event.variables)
+            .find(|v| v.name == name && v.value.to_string().contains(family))
+            .and_then(|v| v.path.clone())
+    };
+    assert_eq!(path_of("src", "Patient").as_deref(), Some("Patient"));
+    assert_eq!(path_of("n", "\"B\"").as_deref(), Some("Patient.name[1]"));
+    assert_eq!(path_of("f", "B").as_deref(), Some("Patient.name[1].family"));
+    // Target values are not in the input.
+    assert!(
+        trace
+            .events
+            .iter()
+            .flat_map(|event| &event.variables)
+            .filter(|v| v.name == "e")
+            .all(|v| v.path.is_none())
+    );
+}

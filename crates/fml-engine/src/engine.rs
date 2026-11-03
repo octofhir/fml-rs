@@ -441,6 +441,14 @@ impl<'a, X: Expressions> Engine<'a, X> {
         let types = self.types();
         let source_type = self.input_type(&map, source_input.type_name.as_deref());
         let source_node = run.tree.load(source, source_type, &types);
+        if run.trace.is_some() {
+            // The trace says where an input variable is in the input (debug.md, variable.path).
+            let root_name = run
+                .tree
+                .fhir_type(source_node)
+                .unwrap_or_else(|| "%resource".to_owned());
+            run.tree.record_paths(source_node, &root_name);
+        }
         let target_type = self.input_type(&map, target_input.type_name.as_deref());
         let target_node = match target {
             Some(target) => run.tree.load(target, target_type, &types),
@@ -839,6 +847,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
                 .to_owned(),
                 value: run.tree.to_json(*node),
                 data_type: self.item(run, *node).type_name,
+                path: run.tree.path(*node).map(str::to_owned),
             })
             .collect();
         variables.reverse();
