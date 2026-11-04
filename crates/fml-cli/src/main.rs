@@ -10,6 +10,7 @@ use fml_check::{CoreDefinitions, PackageDefinitions, Release};
 use fml_engine::{
     ConceptMapSet, DebugReport, Engine, FhirPathExpressions, MapSet, debug_parameters,
 };
+use fml_model::model::StructureMap;
 use fml_model::{Locations, Span};
 use fml_syntax::{Diagnostic, FormatError, FormatOptions, LineIndex, Severity, format, parse};
 use octofhir_canonical_manager::{CanonicalManager, FcmConfig};
@@ -68,7 +69,8 @@ enum Command {
         #[arg(long, default_value = "r5", value_parser = parse_release)]
         fhir: Release,
     },
-    /// Run a map (FML or StructureMap JSON) over a FHIR JSON input.
+    /// Run a map (FML or StructureMap JSON) over a FHIR JSON input, or XML of a logical model
+    /// whose definitions a `--package` brings (CDA, say).
     Run {
         map: PathBuf,
         input: PathBuf,
@@ -93,6 +95,15 @@ enum Command {
         /// `name@version` to install from the package registry.
         #[arg(long = "package")]
         packages: Vec<String>,
+        /// Write the result as JSON or XML. By default XML when the map's target is a logical
+        /// model with an XML form, JSON otherwise.
+        #[arg(long, value_enum)]
+        output_format: Option<DataFormat>,
+    },
+    /// Read XML of a logical model into JSON, or write JSON of one as XML.
+    Xml {
+        #[command(subcommand)]
+        action: XmlAction,
     },
     /// Print a StructureMap (JSON) as FML.
     Print {
@@ -101,6 +112,40 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum XmlAction {
+    /// XML → the JSON maps run on, with what could not be read reported on standard error.
+    Read {
+        input: PathBuf,
+        /// The root's type (canonical URL or name, `Type.element` for a fragment); by default
+        /// the type whose root element name matches.
+        #[arg(long)]
+        root: Option<String>,
+        /// Packages with the model's StructureDefinitions.
+        #[arg(long = "package", required = true)]
+        packages: Vec<String>,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// JSON of a logical model → XML.
+    Write {
+        input: PathBuf,
+        /// The root's type (canonical URL or name, `Type.element` for a fragment).
+        #[arg(long)]
+        root: String,
+        #[arg(long = "package", required = true)]
+        packages: Vec<String>,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DataFormat {
+    Json,
+    Xml,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -153,6 +198,7 @@ fn main() -> ExitCode {
             debug,
             bundle,
             packages,
+            output_format,
         } => run(
             &map,
             &input,
@@ -160,8 +206,13 @@ fn main() -> ExitCode {
             fhir,
             &maps,
             &packages,
-            RunOutput { debug, bundle },
+            RunOutput {
+                debug,
+                bundle,
+                format: output_format,
+            },
         ),
+        Command::Xml { action } => xml(action),
     };
     match result {
         Ok(code) => code,
@@ -527,6 +578,96 @@ fn load_map(path: &Path, sources: &mut Sources) -> Result<fml_model::StructureMa
 struct RunOutput {
     debug: bool,
     bundle: bool,
+    format: Option<DataFormat>,
+}
+
+/// The XML form of the logical models among package resources.
+fn xml_model<'a>(resources: impl IntoIterator<Item = &'a serde_json::Value>) -> fml_xml::Model {
+    let mut model = fml_xml::Model::new();
+    for resource in resources {
+        model.add(resource);
+    }
+    model
+}
+
+/// Whether an input is XML: by its extension, or its first character.
+fn is_xml(path: &Path, text: &str) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+        || text.trim_start().starts_with('<')
+}
+
+/// The canonical URL of the type of the first group's parameter in `mode`.
+fn parameter_type_url(map: &StructureMap, mode: &str) -> Option<String> {
+    let input = map.group.first()?.input.iter().find(|i| i.mode == mode)?;
+    let name = input.type_name.as_deref()?;
+    map.structure
+        .iter()
+        .find(|s| s.alias.as_deref() == Some(name))
+        .map(|s| s.url.clone())
+        .or_else(|| name.contains("://").then(|| name.to_owned()))
+}
+
+fn report_xml_issues(origin: &Path, issues: &[fml_xml::Issue]) {
+    for issue in issues {
+        match issue.position {
+            Some(position) => eprintln!(
+                "warning: {}:{position}: {}: {}",
+                origin.display(),
+                issue.path,
+                issue.message
+            ),
+            None => eprintln!("warning: {}: {issue}", origin.display()),
+        }
+    }
+}
+
+fn xml(action: XmlAction) -> Result<ExitCode> {
+    let load = |packages: &[String]| -> Result<fml_xml::Model> {
+        let mut resources = Vec::new();
+        for package in packages {
+            resources.extend(package_resources(package)?.into_iter().map(|r| r.json));
+        }
+        let model = xml_model(&resources);
+        if model.is_empty() {
+            return Err("the packages define no logical model".into());
+        }
+        Ok(model)
+    };
+    match action {
+        XmlAction::Read {
+            input,
+            root,
+            packages,
+            output,
+        } => {
+            let model = load(&packages)?;
+            let text = std::fs::read_to_string(&input)?;
+            let document = fml_xml::read(&text, &model, root.as_deref())
+                .map_err(|e| format!("{}: {e}", input.display()))?;
+            report_xml_issues(&input, &document.issues);
+            write_output(
+                output.as_deref(),
+                &(serde_json::to_string_pretty(&document.json)? + "\n"),
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
+        XmlAction::Write {
+            input,
+            root,
+            packages,
+            output,
+        } => {
+            let model = load(&packages)?;
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&input)?)
+                    .map_err(|e| format!("{}: not JSON: {e}", input.display()))?;
+            let written = fml_xml::write(&json, &model, &root)?;
+            report_xml_issues(&input, &written.issues);
+            write_output(output.as_deref(), &written.xml)?;
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 fn run(
@@ -539,10 +680,27 @@ fn run(
     how: RunOutput,
 ) -> Result<ExitCode> {
     let (definitions, package_resources) = definitions_with(release, packages)?;
+    let model = xml_model(package_resources.iter().map(|r| &r.json));
     let mut sources = Sources::default();
     let structure_map = load_map(map, &mut sources)?;
-    let source: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(input)?)
-        .map_err(|e| format!("{}: not JSON: {e}", input.display()))?;
+    let text = std::fs::read_to_string(input)?;
+    let source: serde_json::Value = if is_xml(input, &text) {
+        if model.is_empty() {
+            return Err(format!(
+                "{}: XML input needs the logical model's definitions (--package)",
+                input.display()
+            )
+            .into());
+        }
+        let root = parameter_type_url(&structure_map, "source").filter(|u| model.contains(u));
+        let document = fml_xml::read(&text, &model, root.as_deref())
+            .map_err(|e| format!("{}: {e}", input.display()))?;
+        report_xml_issues(input, &document.issues);
+        document.json
+    } else {
+        serde_json::from_str(&text).map_err(|e| format!("{}: not JSON: {e}", input.display()))?
+    };
+    let templates = definitions.template_profiles().clone();
     let mut maps = MapSet::new();
     let mut concept_maps = ConceptMapSet::new();
     for resource in package_resources {
@@ -587,7 +745,7 @@ fn run(
         .build()
         .map_err(|e| format!("cannot start the runtime: {e}"))?;
     let result = runtime.block_on(async {
-        let expressions = FhirPathExpressions::new(release).await?;
+        let expressions = FhirPathExpressions::with_templates(release, templates).await?;
         Ok::<_, String>(
             Engine::new(&definitions, expressions)
                 .with_maps(&maps)
@@ -650,6 +808,18 @@ fn run(
             warnings: &transformed.warnings,
         };
         result = debug_parameters(&report, &|source, position| sources.span(source, position));
+    }
+    let target_xml = parameter_type_url(&structure_map, "target").filter(|u| model.contains(u));
+    let format = how.format.unwrap_or(match &target_xml {
+        Some(_) if !how.debug && !how.bundle => DataFormat::Xml,
+        _ => DataFormat::Json,
+    });
+    if format == DataFormat::Xml {
+        let root = target_xml.ok_or("the map's target is not a logical model with an XML form")?;
+        let written = fml_xml::write(&result, &model, &root)?;
+        report_xml_issues(Path::new("<result>"), &written.issues);
+        write_output(output, &written.xml)?;
+        return Ok(ExitCode::SUCCESS);
     }
     write_output(output, &(serde_json::to_string_pretty(&result)? + "\n"))?;
     Ok(ExitCode::SUCCESS)

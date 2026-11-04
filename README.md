@@ -68,6 +68,10 @@ fml run map.fml in.json --debug    # the $transform debug trace, as Parameters
 fml run map.fml in.json --bundle   # the target and the resources the map produced
 fml check --package hl7.fhir.us.core@6.1.0 maps/
                                    # with the profiles and extensions of a FHIR package
+fml run cda-to-fhir.map document.xml --fhir r4 --package hl7.cda.uv.core@2.0.3-sd
+                                   # XML of a logical model in (and out, when the target is one)
+fml xml read document.xml --package hl7.cda.uv.core@2.0.3-sd
+                                   # the JSON a map sees; what it cannot read, on stderr
 ```
 
 ## The crates
@@ -78,6 +82,7 @@ fml check --package hl7.fhir.us.core@6.1.0 maps/
 | [`fml-model`](crates/fml-model) | StructureMap model; FML → StructureMap like the reference compiler; StructureMap → FML; R4 and R5 forms. |
 | [`fml-check`](crates/fml-check) | Type checker against FHIR R4, R4B, R5 and R6 definitions and FHIR packages: paths, types, variables, group calls, FHIRPath paths. |
 | [`fml-engine`](crates/fml-engine) | StructureMap engine over FHIR JSON, with FHIRPath, imported maps, ConceptMaps and a debug trace. |
+| [`fml-xml`](crates/fml-xml) | XML of logical models (CDA) to the JSON maps run on and back, as the model's StructureDefinitions describe it. |
 | [`fml-cli`](crates/fml-cli) | The `fml` binary. |
 
 ```rust
@@ -127,7 +132,13 @@ reference engine does and finds ConceptMaps by URL, by `url|version` and by the 
 they replace, or asks a terminology service (`$translate`) for the rest. Resources a map creates
 outside the target are returned as `produced`. Where the IG says more than the reference engine,
 it follows the IG: groups and nested rules after `then` both run, source `min..max` is enforced,
-`evaluate` with several values fills a repeating element. Limits on depth, rules, values and trace
+`evaluate` with several values fills a repeating element. Logical models: elements with several
+types and no `[x]` (CDA's `xsi:type`) keep their name and each value its type (`"@type"`), type
+filters name such types by structure name (`: PQ`), and profiles applied by template id (C-CDA
+templates, `type-profile-style` = `cda`) select values and default groups by their `templateId`,
+with or without the template version (`with_template_versions`). `hasTemplateIdOf()` knows the
+templates of the profiles loaded. `with_lenient_translations` leaves out a code a ConceptMap has
+no usable target for instead of failing, for converters of whole documents. Limits on depth, rules, values and trace
 size, and a cancel flag, make it safe for maps from users. With tracing on, the engine records the
 trace of the IG's debug page for `$transform?debug=true`: events with depth, position, text range
 and variables, `traceStatus` (`complete`, `truncated`, `stopped`), and an `outcome` that says
