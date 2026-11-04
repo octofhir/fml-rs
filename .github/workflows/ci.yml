@@ -35,6 +35,7 @@ jobs:
       - run: cargo test --test corpus -- --nocapture
       - run: cargo test -p fml-engine --features fhirpath --test test_cases -- --nocapture
       - run: cargo test -p fml-engine --features fhirpath --test cross_version -- --nocapture
+      - run: FML_XML_CORPUS=$GITHUB_WORKSPACE/corpus/C-CDA-Examples cargo test -p fml-xml --test cda -- --nocapture
       - run: scripts/reference.sh
       - run: cargo test -p fml-model --test reference -- --nocapture
 

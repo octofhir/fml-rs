@@ -15,6 +15,8 @@ fetch mapping-language-ig https://github.com/HL7/mapping-language-ig
 fetch fhir-cross-version https://github.com/HL7/fhir-cross-version
 fetch fhir-r6-maps https://github.com/brianpos/fhir-r6-maps
 fetch fhir-test-cases https://github.com/FHIR/fhir-test-cases
+# HL7 C-CDA examples (CC0), for the XML round trip of fml-xml.
+fetch C-CDA-Examples https://github.com/HL7/C-CDA-Examples
 # The R4 specification examples, for the cross-version conversion test.
 if [ ! -d corpus/r4-examples ]; then
   mkdir -p corpus/r4-examples

@@ -1,0 +1,20 @@
+[package]
+name = "fml-xml"
+description = "XML for FHIR logical models: read XML into the JSON a map runs on and write it back, as the model's StructureDefinitions describe (namespaces, attributes, xsi:type, choice groups)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["fhir", "fml", "xml", "cda", "logical-model"]
+categories = ["parser-implementations", "encoding"]
+exclude = ["tests/data"]
+
+[dependencies]
+roxmltree = "0.21"
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
