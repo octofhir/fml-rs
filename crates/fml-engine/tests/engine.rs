@@ -415,3 +415,72 @@ group Main(source src : Patient, target tgt : Observation) {
         ])
     );
 }
+
+#[tokio::test]
+async fn literal_arguments_are_values() {
+    let map = r#"uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Basic" alias Basic as target
+
+group Main(source src : Patient, target tgt : Basic) {
+  src -> tgt.code as code then Coded(src, code, 'from-a-literal');
+}
+
+group Coded(source src, target code, source text) {
+  text as t -> code.text = t;
+}
+"#;
+    let source = json!({ "resourceType": "Patient" });
+    assert_eq!(
+        run(map, source).await.unwrap(),
+        json!({ "resourceType": "Basic", "code": { "text": "from-a-literal" } })
+    );
+}
+
+#[tokio::test]
+async fn base_elements_are_written_first() {
+    let map = r#"uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as target
+
+group Main(source src : Patient, target tgt : Patient) {
+  src -> tgt.identifier as i, i.value = 'x';
+  src -> tgt.meta as m, m.versionId = '1';
+  src -> tgt.id = 'p';
+}
+"#;
+    let result = run(map, json!({ "resourceType": "Patient" }))
+        .await
+        .unwrap();
+    let keys: Vec<&String> = result.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["resourceType", "id", "meta", "identifier"]);
+}
+
+#[tokio::test]
+async fn translations_without_a_usable_target_fail_or_are_left_out() {
+    let map = r#"uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as target
+
+group Main(source src : Patient, target tgt : Patient) {
+  src.gender as g -> tgt.gender = translate(g, '#genders', 'code');
+}
+"#;
+    let concept_map = json!({
+        "resourceType": "ConceptMap", "id": "genders", "url": "http://example.org/genders", "status": "active",
+        "group": [{ "element": [{ "code": "male", "target": [{ "equivalence": "unmatched" }] }] }]
+    });
+    let mut compiled = fml_model::compile(map);
+    assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
+    compiled.map.contained.push(concept_map);
+    let definitions = CoreDefinitions::new(Release::R5);
+    let source = json!({ "resourceType": "Patient", "gender": "male" });
+    let strict = Engine::new(&definitions, NoExpressions)
+        .transform(&compiled.map, &source)
+        .await;
+    assert!(strict.is_err());
+    let lenient = Engine::new(&definitions, NoExpressions)
+        .with_lenient_translations(true)
+        .transform(&compiled.map, &source)
+        .await
+        .unwrap();
+    assert_eq!(lenient.target, json!({ "resourceType": "Patient" }));
+    assert_eq!(lenient.warnings.len(), 1, "{:?}", lenient.warnings);
+}

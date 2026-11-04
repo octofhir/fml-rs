@@ -9,13 +9,16 @@ use octofhir_fhirschema::{StructureDefinition, translate};
 use serde_json::Value;
 
 use crate::core::convert;
-use crate::definitions::{Definitions, Structure};
+use crate::definitions::{Definitions, Structure, TemplateId};
+use crate::logical;
 
 /// StructureDefinitions loaded from FHIR packages (or any folder of JSON resources), in front of
 /// another set of definitions, usually [`CoreDefinitions`](crate::CoreDefinitions). A profile
 /// inherits what it does not constrain through its base.
 pub struct PackageDefinitions<D> {
     by_url: HashMap<String, Arc<Structure>>,
+    /// Profiles applied by template id, and their templates.
+    templates: HashMap<String, Vec<TemplateId>>,
     base: D,
 }
 
@@ -23,6 +26,7 @@ impl<D: Definitions> PackageDefinitions<D> {
     pub fn new(base: D) -> Self {
         Self {
             by_url: HashMap::new(),
+            templates: HashMap::new(),
             base,
         }
     }
@@ -33,11 +37,21 @@ impl<D: Definitions> PackageDefinitions<D> {
             return Ok(false);
         }
         let url = resource["url"].as_str().unwrap_or_default().to_owned();
-        let definition: StructureDefinition = serde_json::from_value(resource.clone())
-            .map_err(|e| format!("StructureDefinition `{url}`: {e}"))?;
-        let schema =
-            translate(definition, None).map_err(|e| format!("StructureDefinition `{url}`: {e}"))?;
-        let structure = Arc::new(convert(&schema, &url));
+        let templates = logical::templates(resource);
+        if !templates.is_empty() {
+            self.templates.insert(url.clone(), templates);
+        }
+        // Logical models keep elements with several types as they are (see `logical`).
+        let structure = match logical::from_snapshot(resource) {
+            Some(structure) => Arc::new(structure),
+            None => {
+                let definition: StructureDefinition = serde_json::from_value(resource.clone())
+                    .map_err(|e| format!("StructureDefinition `{url}`: {e}"))?;
+                let schema = translate(definition, None)
+                    .map_err(|e| format!("StructureDefinition `{url}`: {e}"))?;
+                Arc::new(convert(&schema, &url))
+            }
+        };
         if let Some(version) = resource["version"].as_str() {
             self.by_url
                 .insert(format!("{url}|{version}"), structure.clone());
@@ -135,6 +149,12 @@ impl<D: Definitions> PackageDefinitions<D> {
         self.by_url.len()
     }
 
+    /// The profiles applied by template id, and their templates (see
+    /// [`Definitions::templates`]).
+    pub fn template_profiles(&self) -> &HashMap<String, Vec<TemplateId>> {
+        &self.templates
+    }
+
     pub fn is_empty(&self) -> bool {
         self.by_url.is_empty()
     }
@@ -206,6 +226,13 @@ impl<D: Definitions> Definitions for PackageDefinitions<D> {
         self.by_url
             .contains_key(url.split('|').next().unwrap_or(url))
             || self.base.covers(url)
+    }
+
+    fn templates(&self, url: &str) -> Vec<TemplateId> {
+        match self.templates.get(url.split('|').next().unwrap_or(url)) {
+            Some(templates) => templates.clone(),
+            None => self.base.templates(url),
+        }
     }
 }
 

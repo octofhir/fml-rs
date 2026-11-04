@@ -6,6 +6,10 @@
 //! `valueReference`), repeating elements, and default groups chosen by type.
 
 use fml_check::{Lookup, Type, Types};
+
+/// The property of a value in JSON that names its type, for elements of logical models whose
+/// values say their type (`xsi:type` in XML).
+pub const TYPE_KEY: &str = "@type";
 use serde_json::{Map, Value};
 
 /// A node in the [`Tree`].
@@ -35,6 +39,11 @@ struct Property {
     /// The element name; for a choice, without the type suffix (`value`).
     name: String,
     choice: bool,
+    /// A logical model's element with several types and no `[x]`: written under its name, each
+    /// value naming its type in `@type`.
+    typed: bool,
+    /// The element's own type, when it has one: a value of another type (a subtype) names it.
+    declared: Option<String>,
     many: bool,
     /// Position in the definition, for writing elements in order.
     index: Option<usize>,
@@ -45,6 +54,7 @@ struct Property {
 struct Slot {
     name: String,
     choice: bool,
+    typed: bool,
     many: bool,
     index: Option<usize>,
     /// The element's type when it has a single one.
@@ -203,6 +213,9 @@ impl Tree {
             data: Data::Complex(Vec::new()),
         });
         for (key, value) in object {
+            if key == TYPE_KEY {
+                continue;
+            }
             if (is_resource && key == "resourceType")
                 || (key.starts_with('_') && object.contains_key(&key[1..]))
             {
@@ -210,7 +223,7 @@ impl Tree {
             }
             // `_name` without `name`: a primitive that has only an id or extensions.
             if let Some(base) = key.strip_prefix('_') {
-                let (slot, child_ty) = self.slot_for_key(&ty, base, types);
+                let (slot, child_ty, _) = self.slot_for_key(&ty, base, types);
                 let elements: Vec<&Value> = match value {
                     Value::Array(items) => items.iter().collect(),
                     single => vec![single],
@@ -227,20 +240,30 @@ impl Tree {
                 self.properties_mut(id).push(Property {
                     name: slot.name,
                     choice: slot.choice,
+                    typed: slot.typed,
+                    declared: declared_key(&slot.ty),
                     many,
                     index: slot.index,
                     values: children,
                 });
                 continue;
             }
-            let (slot, child_ty) = self.slot_for_key(&ty, key, types);
+            let (slot, child_ty, element) = self.slot_for_key(&ty, key, types);
             let values: Vec<&Value> = match value {
                 Value::Array(items) => items.iter().collect(),
                 single => vec![single],
             };
             let mut children = Vec::with_capacity(values.len());
             for item in values {
-                children.push(self.load(item, child_ty.clone(), types));
+                // A value that names its type (`@type`) has that type.
+                let item_ty = match (item.get(TYPE_KEY).and_then(Value::as_str), &element) {
+                    (Some(name), Some(element)) => match types.named_type(element, name) {
+                        Type::Unknown => child_ty.clone(),
+                        named => named,
+                    },
+                    _ => child_ty.clone(),
+                };
+                children.push(self.load(item, item_ty, types));
             }
             // The primitives' `id` and `extension`, from the `_name` sibling.
             if let Some(elements) = object.get(&format!("_{key}")) {
@@ -256,6 +279,8 @@ impl Tree {
             self.properties_mut(id).push(Property {
                 name: slot.name,
                 choice: slot.choice,
+                typed: slot.typed,
+                declared: declared_key(&slot.ty),
                 many,
                 index: slot.index,
                 values: children,
@@ -275,46 +300,57 @@ impl Tree {
     }
 
     /// The element a JSON key holds: `valueString` is the choice `value` with type `string`.
-    fn slot_for_key(&self, ty: &Type, key: &str, types: &Types<'_>) -> (Slot, Type) {
+    fn slot_for_key(
+        &self,
+        ty: &Type,
+        key: &str,
+        types: &Types<'_>,
+    ) -> (Slot, Type, Option<fml_check::ElementRef>) {
         if let Lookup::Found(found) = types.lookup(ty, key) {
             if let Some(base) = &found.element.choice_of {
                 let base_slot = match types.lookup(ty, base) {
-                    Lookup::Found(base_found) => base_found.element.index,
-                    _ => found.element.index,
+                    Lookup::Found(base_found) => element_order(ty, &base_found, types),
+                    _ => element_order(ty, &found, types),
                 };
                 let child = types.element_type(&found, None);
                 return (
                     Slot {
                         name: base.clone(),
                         choice: true,
+                        typed: false,
                         many: false,
                         index: base_slot,
                         ty: child.clone(),
                     },
                     child,
+                    Some(*found),
                 );
             }
             let child = types.element_type(&found, None);
             return (
                 Slot {
                     name: key.to_owned(),
-                    choice: found.element.is_choice(),
+                    choice: !found.element.choices.is_empty(),
+                    typed: found.element.is_polymorphic(),
                     many: found.element.array,
-                    index: found.element.index,
+                    index: element_order(ty, &found, types),
                     ty: child.clone(),
                 },
                 child,
+                Some(*found),
             );
         }
         (
             Slot {
                 name: key.to_owned(),
                 choice: false,
+                typed: false,
                 many: false,
                 index: None,
                 ty: Type::Unknown,
             },
             Type::Unknown,
+            None,
         )
     }
 
@@ -366,9 +402,10 @@ impl Tree {
         match types.lookup(&ty, name) {
             Lookup::Found(found) => Ok(Slot {
                 name: name.to_owned(),
-                choice: found.element.is_choice(),
+                choice: !found.element.choices.is_empty(),
+                typed: found.element.is_polymorphic(),
                 many: found.element.array,
-                index: found.element.index,
+                index: element_order(&ty, &found, types),
                 ty: types.element_type(&found, None),
             }),
             Lookup::Missing => Err(format!("`{}` has no element `{name}`", ty.display())),
@@ -379,6 +416,7 @@ impl Tree {
                 Ok(Slot {
                     name: name.to_owned(),
                     choice: false,
+                    typed: false,
                     many: existing.is_some_and(|p| p.many),
                     index: None,
                     ty: Type::Unknown,
@@ -399,9 +437,9 @@ impl Tree {
             return Ok(id);
         }
         let slot = self.slot(id, name, types)?;
-        if slot.choice {
+        if slot.choice || slot.typed {
             return Err(format!(
-                "`{}.{name}` is a choice; give the type with a transform such as create('Type')",
+                "`{}.{name}` can have several types; give the type with a transform such as create('Type')",
                 self.ty(id).display()
             ));
         }
@@ -437,7 +475,7 @@ impl Tree {
             return Ok(());
         }
         let slot = self.slot(id, name, types)?;
-        if slot.choice && self.fhir_type(value).is_none() {
+        if (slot.choice || slot.typed) && self.fhir_type(value).is_none() {
             return Err(format!(
                 "cannot tell which type of `{}.{name}` the value has",
                 self.ty(id).display()
@@ -458,8 +496,10 @@ impl Tree {
         match properties.iter_mut().find(|p| p.name == slot.name) {
             Some(property) => property.values.push(child),
             None => properties.push(Property {
+                declared: declared_key(&slot.ty),
                 name: slot.name,
                 choice: slot.choice,
+                typed: slot.typed,
                 many: slot.many,
                 index: slot.index,
                 values: vec![child],
@@ -571,6 +611,31 @@ impl Tree {
         }
     }
 
+    /// Puts `@type` first in the JSON of a value whose type the element does not give: any value
+    /// of a polymorphic element, or a value of a type other than the element's own.
+    fn name_type(&self, property: &Property, value: NodeId, json: &mut Value) {
+        let node = &self.nodes[value.0];
+        if node.resource {
+            return;
+        }
+        let Value::Object(object) = json else {
+            return;
+        };
+        let differs = property.declared.as_ref().is_some_and(|declared| {
+            !matches!(node.ty, Type::Unknown) && *declared != node.ty.key()
+        });
+        if !(property.typed || differs) {
+            return;
+        }
+        let Some(name) = type_label(&node.ty).or_else(|| node.type_name.clone()) else {
+            return;
+        };
+        let mut named = Map::with_capacity(object.len() + 1);
+        named.insert(TYPE_KEY.to_owned(), Value::String(name));
+        named.extend(std::mem::take(object));
+        *object = named;
+    }
+
     /// A primitive's `id` and `extension` as the `_name` object, if it has any.
     fn primitive_element(&self, id: NodeId) -> Option<Value> {
         match &self.nodes[id.0].data {
@@ -590,7 +655,13 @@ impl Tree {
             let values: Vec<(NodeId, Value, Option<Value>)> = property
                 .values
                 .iter()
-                .map(|&value| (value, self.to_json(value), self.primitive_element(value)))
+                .map(|&value| {
+                    let mut json = self.to_json(value);
+                    if !property.choice {
+                        self.name_type(property, value, &mut json);
+                    }
+                    (value, json, self.primitive_element(value))
+                })
                 .filter(|(_, json, element)| !is_empty(json) || element.is_some())
                 .collect();
             if values.is_empty() {
@@ -633,6 +704,40 @@ impl Tree {
     }
 }
 
+/// Where an element goes when a node is written: elements a base structure defines come before
+/// the structure's own (`Resource.meta` before `Patient.identifier`), each in definition order.
+fn element_order(ty: &Type, found: &fml_check::ElementRef, types: &Types<'_>) -> Option<usize> {
+    let index = found.element.index?;
+    let Type::Node { structure, path } = ty else {
+        return Some(index);
+    };
+    if !path.is_empty() {
+        return Some(index);
+    }
+    // How far up the base chain the element's owner is.
+    let mut depth = 0;
+    let mut current = Some(structure.clone());
+    while let Some(structure) = current {
+        if structure.url == found.owner.url || depth >= 32 {
+            break;
+        }
+        depth += 1;
+        current = structure
+            .base
+            .as_deref()
+            .and_then(|base| types.definitions.structure(base));
+    }
+    Some((64 - depth.min(63)) * 1_000_000 + index)
+}
+
+/// The key of a slot's type, when it is known.
+fn declared_key(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Unknown => None,
+        known => Some(known.key()),
+    }
+}
+
 /// Values left out of the output: unassigned primitives and elements with no content.
 fn is_empty(json: &Value) -> bool {
     match json {
@@ -640,6 +745,21 @@ fn is_empty(json: &Value) -> bool {
         Value::Object(map) => map.is_empty(),
         Value::Array(items) => items.is_empty(),
         _ => false,
+    }
+}
+
+/// How `@type` names a type: a logical model's types by structure name (`IVL_TS`), others by
+/// type name. Backbone elements have no name of their own.
+fn type_label(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Node { structure, path } if path.is_empty() => {
+            Some(if structure.kind == fml_check::Kind::Logical {
+                structure.name.clone()
+            } else {
+                structure.type_name.clone()
+            })
+        }
+        _ => None,
     }
 }
 

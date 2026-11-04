@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fml_check::definitions::type_url;
-use fml_check::{Definitions, Lookup, Type, Types};
+use fml_check::{Definitions, Kind, Lookup, Type, Types};
 use fml_model::model::{
     Dependent, Group, Parameter, ParameterValue, Rule, Source, StructureMap, Target,
 };
@@ -215,6 +215,13 @@ pub struct Engine<'a, X> {
     limits: Limits,
     cancel: Option<&'a AtomicBool>,
     trace: bool,
+    /// Whether a code a ConceptMap gives no usable target for is left out with a warning
+    /// instead of failing the transform (see
+    /// [`with_lenient_translations`](Self::with_lenient_translations)).
+    lenient_translations: bool,
+    /// Whether a template's version (`extension`) must match too (see
+    /// [`with_template_versions`](Self::with_template_versions)).
+    template_versions: bool,
     /// Group lookups, which look through every imported map: the maps do not change between
     /// transforms, so each answer is computed once.
     groups: Mutex<GroupCache>,
@@ -345,6 +352,8 @@ impl<'a, X: Expressions> Engine<'a, X> {
             limits: Limits::default(),
             cancel: None,
             trace: false,
+            template_versions: true,
+            lenient_translations: false,
             groups: Mutex::new(GroupCache::default()),
         }
     }
@@ -382,6 +391,24 @@ impl<'a, X: Expressions> Engine<'a, X> {
     /// [`ErrorKind::Cancelled`] at the next rule.
     pub fn with_cancellation(mut self, cancel: &'a AtomicBool) -> Self {
         self.cancel = Some(cancel);
+        self
+    }
+
+    /// Whether a value carries a template only with the template's version (`templateId`
+    /// `extension`), as a profile's identifier states it — the default — or with any version of
+    /// it (the same `root`). Converters that must recognise documents written against earlier
+    /// versions of the templates turn versions off.
+    pub fn with_template_versions(mut self, versions: bool) -> Self {
+        self.template_versions = versions;
+        self
+    }
+
+    /// What `translate` does with a code whose ConceptMap element has no usable target (R4
+    /// `unmatched` or `disjoint`, R5 `not-related-to`, or several): fail the transform, as the
+    /// reference engine does (the default), or leave the target unset and report a warning, as
+    /// for a code the ConceptMap does not list. Converters of whole documents leave it out.
+    pub fn with_lenient_translations(mut self, lenient: bool) -> Self {
+        self.lenient_translations = lenient;
         self
     }
 
@@ -443,10 +470,19 @@ impl<'a, X: Expressions> Engine<'a, X> {
         let source_node = run.tree.load(source, source_type, &types);
         if run.trace.is_some() {
             // The trace says where an input variable is in the input (debug.md, variable.path).
-            let root_name = run
-                .tree
-                .fhir_type(source_node)
-                .unwrap_or_else(|| "%resource".to_owned());
+            // A logical model's type is a URL; its paths start with the structure's name, as
+            // the XML reader records positions (`ClinicalDocument.component…`).
+            let root_name = match run.tree.ty(source_node) {
+                Type::Node { structure, path }
+                    if path.is_empty() && structure.kind == Kind::Logical =>
+                {
+                    structure.name.clone()
+                }
+                _ => run
+                    .tree
+                    .fhir_type(source_node)
+                    .unwrap_or_else(|| "%resource".to_owned()),
+            };
             run.tree.record_paths(source_node, &root_name);
         }
         let target_type = self.input_type(&map, target_input.type_name.as_deref());
@@ -653,7 +689,19 @@ impl<'a, X: Expressions> Engine<'a, X> {
                 && matches!(group.input.as_slice(), [s, t]
                     if s.mode == "source" && t.mode == "target"
                     && self.stated_type_is(map, s.type_name.as_deref(), source)
+                    && !self.is_template_profile(map, s.type_name.as_deref())
                     && self.stated_type_is(map, t.type_name.as_deref(), target))
+        })
+    }
+
+    /// Whether a group parameter's type is a profile applied by template id: such groups are
+    /// chosen by the value's templates, not by its type alone.
+    fn is_template_profile(&self, map: &StructureMap, stated: Option<&str>) -> bool {
+        stated.is_some_and(|stated| {
+            !self
+                .definitions
+                .templates(&self.type_name_url(map, stated, CORE))
+                .is_empty()
         })
     }
 
@@ -687,6 +735,90 @@ impl<'a, X: Expressions> Engine<'a, X> {
             .find(|s| s.alias.as_deref() == Some(stated))
             .and_then(|s| self.definitions.structure(&s.url))
             .map_or_else(|| stated.to_owned(), |s| s.type_name.clone())
+    }
+
+    /// Whether a value has the type a source type filter states: the type itself (by type name,
+    /// or for a logical model also by structure name, `CD`), and for a profile applied by
+    /// template id, one of the profile's templates.
+    fn has_stated_type(&self, run: &Run, map: &StructureMap, node: NodeId, stated: &str) -> bool {
+        let wanted = self.stated_type_name(map, stated);
+        let same = run.tree.fhir_type(node).as_deref() == Some(wanted.as_str())
+            || matches!(run.tree.ty(node), Type::Node { structure, path }
+                if path.is_empty()
+                    && structure.kind == Kind::Logical
+                    && (structure.name == wanted || structure.url == wanted));
+        same && self.has_templates_of(run, map, node, stated)
+    }
+
+    /// Whether a value carries one of the templates of the profile `stated` names; true when the
+    /// profile is not applied by template id.
+    fn has_templates_of(&self, run: &Run, map: &StructureMap, node: NodeId, stated: &str) -> bool {
+        let url = self.type_name_url(map, stated, CORE);
+        let templates = self.definitions.templates(&url);
+        if templates.is_empty() {
+            return true;
+        }
+        run.tree.children(node, "templateId").into_iter().any(|id| {
+            let text = |name: &str| {
+                run.tree
+                    .children(id, name)
+                    .first()
+                    .and_then(|&n| run.tree.text(n))
+            };
+            let (root, extension) = (text("root"), text("extension"));
+            root.is_some_and(|root| {
+                templates.iter().any(|t| {
+                    if self.template_versions {
+                        t.matches(&root, extension.as_deref())
+                    } else {
+                        t.root == root
+                    }
+                })
+            })
+        })
+    }
+
+    /// The default group for a value whose type has profiles applied by template id: the first
+    /// with a type mode whose source is such a profile the value carries a template of, and whose
+    /// target is the target's type.
+    fn group_by_template(
+        &self,
+        run: &Run,
+        map: &Arc<StructureMap>,
+        source: NodeId,
+        target: Option<&str>,
+    ) -> Option<GroupRef> {
+        let target = target?;
+        let fits = |owner: &StructureMap, group: &Group| -> bool {
+            group.type_mode.is_some()
+                && matches!(group.input.as_slice(), [s, t]
+                    if s.mode == "source" && t.mode == "target"
+                    && s.type_name.as_deref().is_some_and(|stated| {
+                        !self.definitions.templates(&self.type_name_url(owner, stated, CORE)).is_empty()
+                            && self.has_stated_type(run, owner, source, stated)
+                    })
+                    && self.stated_type_is(owner, t.type_name.as_deref(), target))
+        };
+        if let Some(index) = map.group.iter().position(|g| fits(map, g)) {
+            return Some(GroupRef {
+                map: map.clone(),
+                index,
+            });
+        }
+        for import in &map.import {
+            for imported in self.maps.resolve(import) {
+                if imported.url == map.url {
+                    continue;
+                }
+                if let Some(index) = imported.group.iter().position(|g| fits(&imported, g)) {
+                    return Some(GroupRef {
+                        map: imported,
+                        index,
+                    });
+                }
+            }
+        }
+        None
     }
 
     fn stated_type_is(&self, map: &StructureMap, stated: Option<&str>, actual: &str) -> bool {
@@ -901,9 +1033,12 @@ impl<'a, X: Expressions> Engine<'a, X> {
             .ok_or_else(|| Error::in_rule(rule, format!("no target variable `{target}`")))?;
         let source_type = run.tree.fhir_type(source);
         let target_type = run.tree.fhir_type(target);
-        if let Some(default) =
-            self.group_by_types(&group.map, source_type.as_deref(), target_type.as_deref())
-        {
+        let chosen = self
+            .group_by_template(run, &group.map, source, target_type.as_deref())
+            .or_else(|| {
+                self.group_by_types(&group.map, source_type.as_deref(), target_type.as_deref())
+            });
+        if let Some(default) = chosen {
             let inputs = &default.group().input;
             let mut call = Vars::default();
             call.add(Mode::Input, &inputs[0].name, source);
@@ -949,7 +1084,29 @@ impl<'a, X: Expressions> Engine<'a, X> {
         for (input, parameter) in inputs.iter().zip(&dependent.parameter) {
             let name = parameter_name(parameter);
             let (mode, node) = if input.mode == "source" {
-                (Mode::Input, vars.value(&name))
+                // A literal argument (fml.md: a parameter is an id or a literal) is a value of
+                // its own; a string names a variable when one has that name.
+                let node = match &parameter.value {
+                    ParameterValue::Id(name) => vars.value(name),
+                    ParameterValue::String(text) => vars
+                        .value(text)
+                        .or_else(|| Some(self.string(run, text.clone(), "string"))),
+                    ParameterValue::Boolean(b) => {
+                        Some(self.literal(run, Value::Bool(*b), "boolean"))
+                    }
+                    ParameterValue::Integer(n) => {
+                        Some(self.literal(run, Value::from(*n), "integer"))
+                    }
+                    ParameterValue::Decimal(n) => {
+                        Some(self.literal(run, Value::Number(n.clone()), "decimal"))
+                    }
+                    ParameterValue::Date(text) => Some(self.string(run, text.clone(), "date")),
+                    ParameterValue::Time(text) => Some(self.string(run, text.clone(), "time")),
+                    ParameterValue::DateTime(text) => {
+                        Some(self.string(run, text.clone(), "dateTime"))
+                    }
+                };
+                (Mode::Input, node)
             } else {
                 (Mode::Output, vars.get(Mode::Output, &name))
             };
@@ -997,8 +1154,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
         check_cardinality(rule, source, items.len())?;
         // The type filter selects the exact type; the default stands in when nothing is left.
         if let Some(type_name) = &source.type_name {
-            let wanted = self.stated_type_name(&group.map, type_name);
-            items.retain(|&item| run.tree.fhir_type(item).as_deref() == Some(wanted.as_str()));
+            items.retain(|&item| self.has_stated_type(run, &group.map, item, type_name));
         }
         if items.is_empty()
             && let Some(default) = &source.default_value
@@ -1266,7 +1422,22 @@ impl<'a, X: Expressions> Engine<'a, X> {
                         let context = destination
                             .and_then(|d| run.tree.ty(d).structure().map(|s| s.url.clone()))
                             .unwrap_or_else(|| CORE.to_owned());
-                        let ty = types.structure(&self.type_name_url(&group.map, &name, &context));
+                        // A type of the element written to (`value = create('PQ')` into a
+                        // logical model's element that has several), else by name or alias.
+                        let of_element = match (destination, element) {
+                            (Some(d), Some(element)) => match types.lookup(run.tree.ty(d), element)
+                            {
+                                Lookup::Found(found) => types.named_type(&found, &name),
+                                _ => Type::Unknown,
+                            },
+                            _ => Type::Unknown,
+                        };
+                        let ty = match of_element {
+                            Type::Unknown => {
+                                types.structure(&self.type_name_url(&group.map, &name, &context))
+                            }
+                            known => known,
+                        };
                         (ty, Some(name))
                     }
                     None => self
@@ -1581,6 +1752,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
         }
         let codes = self.codes_of(run, source);
         let mut translation = None;
+        let mut reported = false;
         for (system, code) in &codes {
             let found = match (&concept_map, self.translator) {
                 (Some(concept_map), _) => translate(concept_map, system.as_deref(), code),
@@ -1590,14 +1762,29 @@ impl<'a, X: Expressions> Engine<'a, X> {
                         .await
                 }
                 (None, None) => unreachable!("checked above"),
-            }
-            .map_err(|e| fail(format!("{e} in `{map_url}`")))?;
+            };
+            let found = match found {
+                Ok(found) => found,
+                // A code the ConceptMap marks as having no counterpart: left out, like a code it
+                // does not know, when the host asked for that.
+                Err(e) if self.lenient_translations => {
+                    let rule_name = rule.name.as_deref().unwrap_or("?");
+                    run.warnings
+                        .push(format!("rule `{rule_name}`: {e} in `{map_url}`; left out"));
+                    reported = true;
+                    None
+                }
+                Err(e) => return Err(fail(format!("{e} in `{map_url}`"))),
+            };
             if let Some(found) = found {
                 translation = Some(found);
                 break;
             }
         }
         let Some(translation) = translation else {
+            if reported {
+                return Ok(None);
+            }
             let shown: Vec<&str> = codes.iter().map(|(_, c)| c.as_str()).collect();
             let rule_name = rule.name.as_deref().unwrap_or("?");
             run.warnings.push(format!(
@@ -1749,6 +1936,11 @@ impl<'a, X: Expressions> Engine<'a, X> {
             .get(index)
             .ok_or_else(|| Error::new(format!("missing argument {}", index + 1)))?;
         self.parameter_text(run, group, parameter, vars).await
+    }
+
+    fn literal(&self, run: &mut Run, value: Value, type_name: &str) -> NodeId {
+        let ty = self.types().structure(&type_url(type_name, CORE));
+        run.tree.primitive(value, ty, Some(type_name.to_owned()))
     }
 
     fn string(&self, run: &mut Run, text: String, type_name: &str) -> NodeId {

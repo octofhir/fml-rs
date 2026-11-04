@@ -1,9 +1,11 @@
 //! FHIRPath through octofhir-fhirpath, typed by the embedded core definitions.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use fml_check::Release;
 use octofhir_fhir_model::ValidationProvider;
+use octofhir_fhirpath::evaluator::functions::HasTemplateIdOfFunctionEvaluator;
 use octofhir_fhirpath::{
     Collection, EvaluationContext, FhirPathEngine, FhirPathValue, create_function_registry,
 };
@@ -24,6 +26,15 @@ pub struct FhirPathExpressions {
 
 impl FhirPathExpressions {
     pub async fn new(release: Release) -> Result<Self, String> {
+        Self::with_templates(release, HashMap::new()).await
+    }
+
+    /// FHIRPath whose `hasTemplateIdOf(profileUrl)` (CDA) knows the templates of these profiles,
+    /// such as [`PackageDefinitions::template_profiles`](fml_check::PackageDefinitions) gives.
+    pub async fn with_templates(
+        release: Release,
+        templates: HashMap<String, Vec<fml_check::TemplateId>>,
+    ) -> Result<Self, String> {
         let version = match release {
             Release::R4 => ModelFhirVersion::R4,
             Release::R4B => ModelFhirVersion::R4B,
@@ -32,7 +43,20 @@ impl FhirPathExpressions {
         };
         let embedded = Arc::new(EmbeddedSchemaProvider::new(version));
         let provider: Arc<dyn ModelProvider + Send + Sync> = embedded.clone();
-        let engine = FhirPathEngine::new(Arc::new(create_function_registry()), provider.clone())
+        let mut registry = create_function_registry();
+        if !templates.is_empty() {
+            let resolver: HashMap<String, Vec<(String, Option<String>)>> = templates
+                .into_iter()
+                .map(|(url, ids)| {
+                    let ids = ids.into_iter().map(|t| (t.root, t.extension)).collect();
+                    (url, ids)
+                })
+                .collect();
+            registry.register_pure_function(HasTemplateIdOfFunctionEvaluator::with_resolver(
+                Arc::new(resolver),
+            ));
+        }
+        let engine = FhirPathEngine::new(Arc::new(registry), provider.clone())
             .await
             .map_err(|e| e.to_string())?;
         let validation = create_validation_provider_from_embedded(embedded)

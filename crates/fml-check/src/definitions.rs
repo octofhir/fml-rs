@@ -22,6 +22,53 @@ pub trait Definitions {
         let _ = url;
         false
     }
+
+    /// The templates through which the profile at `url` applies, for models that apply profiles
+    /// by template id (`type-profile-style` = `cda`): a value conforms when one of its
+    /// `templateId`s matches one of these. Empty for any other structure.
+    fn templates(&self, url: &str) -> Vec<TemplateId> {
+        let _ = url;
+        Vec::new()
+    }
+}
+
+/// A template identifier: the `root` and `extension` of an `II`, as a profile's
+/// `urn:hl7ii:root:extension` identifier gives them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TemplateId {
+    pub root: String,
+    pub extension: Option<String>,
+}
+
+impl TemplateId {
+    /// Reads `urn:hl7ii:root:extension`, `urn:hl7ii:root` or `urn:oid:root`.
+    pub fn parse(identifier: &str) -> Option<TemplateId> {
+        if let Some(rest) = identifier.strip_prefix("urn:hl7ii:") {
+            let (root, extension) = match rest.split_once(':') {
+                Some((root, extension)) => (root, Some(extension.to_owned())),
+                None => (rest, None),
+            };
+            return (!root.is_empty()).then(|| TemplateId {
+                root: root.to_owned(),
+                extension,
+            });
+        }
+        let root = identifier.strip_prefix("urn:oid:")?;
+        (!root.is_empty()).then(|| TemplateId {
+            root: root.to_owned(),
+            extension: None,
+        })
+    }
+
+    /// Whether an instance's `templateId` with this `root` and `extension` is this template. A
+    /// template without an extension matches its root whatever the extension.
+    pub fn matches(&self, root: &str, extension: Option<&str>) -> bool {
+        self.root == root
+            && match &self.extension {
+                Some(wanted) => extension == Some(wanted.as_str()),
+                None => true,
+            }
+    }
 }
 
 /// No definitions: only checks that need none (variables, groups, transforms) run.
@@ -79,6 +126,12 @@ pub struct Element {
 impl Element {
     pub fn is_choice(&self) -> bool {
         !self.choices.is_empty() || self.types.len() > 1
+    }
+
+    /// An element of a logical model with several types and no `[x]`: it keeps its name, and
+    /// each value says its type (in XML with `xsi:type`).
+    pub fn is_polymorphic(&self) -> bool {
+        self.choices.is_empty() && self.types.len() > 1
     }
 }
 

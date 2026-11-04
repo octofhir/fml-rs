@@ -29,6 +29,18 @@ pub trait Expressions {
     ) -> impl Future<Output = Result<Vec<Item>, String>>;
 }
 
+/// A shared evaluator: one FHIRPath engine for many transforms.
+impl<T: Expressions> Expressions for &T {
+    fn evaluate(
+        &self,
+        expression: &str,
+        focus: Option<&Item>,
+        variables: &[(String, Item)],
+    ) -> impl Future<Output = Result<Vec<Item>, String>> {
+        (**self).evaluate(expression, focus, variables)
+    }
+}
+
 /// No FHIRPath: maps that use expressions fail with a clear error.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoExpressions;

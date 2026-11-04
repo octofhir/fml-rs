@@ -8,7 +8,7 @@ use fml_syntax::ast::{
 };
 use fml_syntax::{Diagnostic, Severity, SyntaxKind, SyntaxNode, TextRange};
 
-use crate::definitions::{Definitions, type_url};
+use crate::definitions::{Definitions, Kind, type_url};
 use crate::types::{Lookup, Type, Types};
 
 /// Checks a parsed map. Syntax errors are not repeated; see [`fml_syntax::Parse::diagnostics`].
@@ -461,6 +461,14 @@ impl<'a> Checker<'a> {
             );
             return;
         };
+        // A rule reads from source variables; a variable a target made is not one (the engine,
+        // like the reference engine, looks the context up among the source variables).
+        if variable.mode == Mode::Target {
+            self.error_at(
+                segment_range(&path, 0),
+                format!("`{context}` is a target variable; a source reads from a source variable"),
+            );
+        }
         let annotation = source.type_annotation();
         let annotated = annotation.as_ref().and_then(|a| a.type_name());
         let ty = self.walk(
@@ -639,6 +647,23 @@ impl<'a> Checker<'a> {
 
     /// The type `create('Type')` makes, checked against the element it is assigned to.
     fn created_type(&mut self, type_name: &str, element: &Type, at: &Expr) -> Type {
+        // In a logical model, a type next to the element's own (`create('CE')` into a `CE`
+        // element, or a subtype of it), named as the engine names it.
+        if let (None, Type::Node { structure, .. }) = (self.type_names.get(type_name), element)
+            && structure.kind == Kind::Logical
+            && let Some((prefix, _)) = structure.url.rsplit_once('/')
+        {
+            for id in [type_name.to_owned(), type_name.replace('_', "-")] {
+                if let Some(found) = self.definitions.structure(&format!("{prefix}/{id}"))
+                    && found.name == type_name
+                {
+                    return Type::Node {
+                        structure: found,
+                        path: Vec::new(),
+                    };
+                }
+            }
+        }
         let url = match (self.type_names.get(type_name), element) {
             (Some(url), _) => url.clone(),
             (None, Type::Node { structure, .. }) => type_url(type_name, &structure.url),
@@ -859,7 +884,14 @@ impl<'a> Checker<'a> {
                     return Type::Unknown;
                 }
                 Lookup::Found(found) => {
-                    let chosen = if last { annotation } else { None };
+                    // A `uses` alias names its structure (a profile, say), as in the engine.
+                    let resolved = annotation.map(|name| {
+                        self.type_names
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| name.to_owned())
+                    });
+                    let chosen = if last { resolved.as_deref() } else { None };
                     if let (Some(chosen), Some(node)) = (chosen, annotation_node)
                         && !found.element.types.is_empty()
                         && !self
@@ -869,7 +901,8 @@ impl<'a> Checker<'a> {
                         self.error(
                             node.syntax(),
                             format!(
-                                "`{chosen}` is not a type of `{}.{segment}`; it is {}",
+                                "`{}` is not a type of `{}.{segment}`; it is {}",
+                                annotation.unwrap_or(chosen),
                                 ty.display(),
                                 found.element.types.join(", ")
                             ),

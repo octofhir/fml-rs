@@ -29,3 +29,4 @@ pub use trace::{
     DebugReport, Phase, SpanLookup, Trace, TraceEvent, TraceStatus, TraceVariable,
     debug_parameters, no_spans,
 };
+pub use tree::TYPE_KEY;

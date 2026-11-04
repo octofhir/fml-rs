@@ -187,3 +187,22 @@ group G(source src, target type) {
     4:21 `type` is a reserved keyword
     ");
 }
+
+#[test]
+fn sources_read_source_variables() {
+    let source = r#"/// url = 'http://example.org/StructureMap/s'
+/// name = 'S'
+uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Basic" alias Basic as target
+
+group S(source src : Patient, target tgt : Basic) {
+  src.id as id -> tgt.code as made then {
+    made.text as t -> tgt.id = t;
+  };
+}
+"#;
+    assert_eq!(
+        diagnostics(source, Release::R5),
+        "8:5 `made` is a target variable; a source reads from a source variable"
+    );
+}

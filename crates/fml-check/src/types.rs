@@ -218,6 +218,21 @@ impl<'a> Types<'a> {
             };
         }
         if !element.element.children.is_empty() {
+            // Children a snapshot lists for an element of a structure type (`typeId.root` under
+            // an `II`) are that type's own: the element has the type. Children the type does not
+            // have make it a backbone element.
+            if let [code] = element.element.types.as_slice() {
+                let typed = self.structure(&type_url(code, &element.owner.url));
+                if matches!(&typed, Type::Node { structure, .. } if !structure.is_abstract)
+                    && element
+                        .element
+                        .children
+                        .keys()
+                        .all(|name| matches!(self.lookup(&typed, name), Lookup::Found(_)))
+                {
+                    return typed;
+                }
+            }
             return Type::Node {
                 structure: element.owner.clone(),
                 path: element.path.clone(),
@@ -229,6 +244,51 @@ impl<'a> Types<'a> {
             _ => return Type::Unknown,
         };
         self.structure(&type_url(&code, &element.owner.url))
+    }
+
+    /// The type `name` names for a value of `element`: one of the element's types, by structure
+    /// name (`IVL_TS`), type name or URL, or a type next to them that derives from one (a `CE` in
+    /// a `CD` element). This is how a logical model's value says its type (`xsi:type`).
+    pub fn named_type(&self, element: &ElementRef, name: &str) -> Type {
+        let candidates: Vec<String> = element
+            .element
+            .types
+            .iter()
+            .map(|code| type_url(code, &element.owner.url))
+            .collect();
+        for url in &candidates {
+            if let Some(structure) = self.definitions.structure(url)
+                && (structure.name == name
+                    || structure.type_name == name
+                    || url == name
+                    || url.ends_with(&format!("/{name}")))
+            {
+                return Type::Node {
+                    structure,
+                    path: Vec::new(),
+                };
+            }
+        }
+        if name.contains("://") {
+            return self.structure(name);
+        }
+        // Model URLs name types by id, where `IVL_TS` is `IVL-TS`.
+        for url in &candidates {
+            let Some((prefix, _)) = url.rsplit_once('/') else {
+                continue;
+            };
+            for id in [name.to_owned(), name.replace('_', "-")] {
+                if let Some(structure) = self.definitions.structure(&format!("{prefix}/{id}"))
+                    && (structure.name == name || structure.type_name.ends_with(name))
+                {
+                    return Type::Node {
+                        structure,
+                        path: Vec::new(),
+                    };
+                }
+            }
+        }
+        Type::Unknown
     }
 
     /// Whether `chosen` is one of `types`, or derives from one of them (`OperationOutcome` for an
