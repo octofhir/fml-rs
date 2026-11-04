@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "fml-check"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "fml-syntax",
  "insta",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "fml-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "clap",
  "fml-check",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "fml-engine"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "fml-check",
  "fml-model",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "fml-model"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "fml-syntax",
  "insta",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "fml-syntax"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "insta",
  "rowan",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "fml-xml"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "roxmltree",
  "serde_json",

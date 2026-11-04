@@ -13,7 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-fml-syntax = { path = "../fml-syntax", version = "0.2.2" }
+fml-syntax = { path = "../fml-syntax", version = "0.2.3" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 
