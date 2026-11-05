@@ -762,6 +762,17 @@ impl<'a> Checker<'a> {
                 }
                 let name = ast::name_text(&token);
                 if let Some(variable) = scope.get(&name) {
+                    // A variable hides an element of the focus with the same name: almost always
+                    // a slip (`src.code as code where (code.exists())` tests the variable).
+                    // A primitive's own `value` is the primitive: no difference there.
+                    if !(focus.is_primitive() && name == "value")
+                        && matches!(self.types().lookup(focus, &name), Lookup::Found(_))
+                    {
+                        let message = format!(
+                            "`{name}` here is the variable `{name}`, not the element `{name}` of the focus; rename the variable, or write `$this.{name}` for the element"
+                        );
+                        self.report(Severity::Warning, trimmed_range(node), message);
+                    }
                     return variable.ty.clone();
                 }
                 // `Patient.name` on a Patient: the type name selects the focus itself.

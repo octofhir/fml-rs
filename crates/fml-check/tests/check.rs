@@ -206,3 +206,23 @@ group S(source src : Patient, target tgt : Basic) {
         "8:5 `made` is a target variable; a source reads from a source variable"
     );
 }
+
+#[test]
+fn a_variable_hiding_an_element_is_reported() {
+    let source = r#"/// url = 'http://example.org/StructureMap/s'
+/// name = 'S'
+uses "http://hl7.org/fhir/StructureDefinition/Patient" alias Patient as source
+uses "http://hl7.org/fhir/StructureDefinition/Basic" alias Basic as target
+
+group S(source src : Patient, target tgt : Basic) {
+  src.maritalStatus as text where (text.exists()) -> tgt.id = 'x';
+  src.maritalStatus as status where (status.text.exists()) -> tgt.id = 'y';
+  src.gender as gender where (gender = 'male') -> tgt.id = 'z';
+  src.id as value where (value.startsWith('a')) -> tgt.id = 'w';
+}
+"#;
+    assert_eq!(
+        diagnostics(source, Release::R5),
+        "7:36 `text` here is the variable `text`, not the element `text` of the focus; rename the variable, or write `$this.text` for the element"
+    );
+}
