@@ -99,7 +99,19 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --workspace --allow-dirty --locked
+        # One crate at a time, in dependency order, each version only once: a run that stopped
+        # half way (the index slow to show a dependency) can run again and publish the rest.
+        run: |
+          version="${{ needs.version.outputs.next }}"
+          for crate in fml-syntax fml-xml fml-model fml-check fml-engine fml-cli; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -A "fml-rs-release" \
+              "https://crates.io/api/v1/crates/$crate/$version")
+            if [ "$code" = "200" ]; then
+              echo "$crate $version is already published"
+              continue
+            fi
+            cargo publish -p "$crate" --allow-dirty --locked
+          done
       - name: Commit the version and tag it
         run: |
           git config user.name "github-actions[bot]"
