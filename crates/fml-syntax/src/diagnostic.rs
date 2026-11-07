@@ -81,6 +81,27 @@ impl LineIndex {
             col_utf16: prefix.encode_utf16().count() as u32,
         }
     }
+    /// The offset of a zero-based line and UTF-16 column in `text`, which must be the text this
+    /// index was built from. Positions past the end of a line or of the text are clamped.
+    pub fn offset_utf16(&self, text: &str, line: u32, col_utf16: u32) -> TextSize {
+        let Some(&start) = self.line_starts.get(line as usize) else {
+            return TextSize::of(text);
+        };
+        let end = self
+            .line_starts
+            .get(line as usize + 1)
+            .map_or(text.len(), |&next| usize::from(next));
+        let mut offset = usize::from(start);
+        let mut units = 0;
+        for c in text[offset..end].chars() {
+            if units >= col_utf16 || c == '\n' || c == '\r' {
+                break;
+            }
+            units += c.len_utf16() as u32;
+            offset += c.len_utf8();
+        }
+        TextSize::from(offset as u32)
+    }
 }
 
 #[cfg(test)]
@@ -116,5 +137,22 @@ mod tests {
                 col_utf16: 0
             }
         );
+    }
+
+    #[test]
+    fn offsets_from_utf16_positions() {
+        let text = "ab\n𝄞d\r\nx";
+        let index = LineIndex::new(text);
+        let at = |line, col| u32::from(index.offset_utf16(text, line, col));
+        assert_eq!(at(0, 1), 1);
+        assert_eq!(at(1, 2), 7);
+        assert_eq!(at(1, 3), 8);
+        assert_eq!(at(1, 9), 8);
+        assert_eq!(at(2, 0), 10);
+        assert_eq!(at(7, 0), 11);
+        for offset in [0u32, 1, 3, 7, 8, 10, 11] {
+            let position = index.line_col(text, TextSize::from(offset));
+            assert_eq!(at(position.line, position.col_utf16), offset);
+        }
     }
 }

@@ -153,6 +153,78 @@ impl<'a> Types<'a> {
         }
     }
 
+    /// Every element of `ty`, declared or inherited, own elements first and each in definition
+    /// order. Empty when the type is not known.
+    pub fn elements(&self, ty: &Type) -> Vec<ElementRef> {
+        let Type::Node { structure, path } = ty else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        if path.is_empty() {
+            self.collect_elements(structure.clone(), &mut found);
+            return found;
+        }
+        let Some(node) = self.element_at(structure, path) else {
+            return found;
+        };
+        let mut children: Vec<(&String, &Element)> = node.children.iter().collect();
+        children.sort_by_key(|(_, element)| element.index);
+        for (name, element) in children {
+            let mut element_path = path.clone();
+            element_path.push(name.clone());
+            found.push(ElementRef {
+                name: name.clone(),
+                element: element.clone(),
+                owner: structure.clone(),
+                path: element_path,
+            });
+        }
+        if let Some(base) = node
+            .types
+            .first()
+            .and_then(|code| self.definitions.structure(&type_url(code, &structure.url)))
+        {
+            self.collect_elements(base, &mut found);
+        }
+        found
+    }
+
+    fn collect_elements(&self, structure: Arc<Structure>, found: &mut Vec<ElementRef>) {
+        let mut current = Some(structure);
+        let mut depth = 0;
+        while let Some(structure) = current.take() {
+            if structure.kind == Kind::PrimitiveType && !found.iter().any(|e| e.name == "value") {
+                found.push(ElementRef {
+                    name: "value".to_owned(),
+                    element: Element::default(),
+                    owner: structure.clone(),
+                    path: vec!["value".to_owned()],
+                });
+            }
+            let mut elements: Vec<(&String, &Element)> = structure.elements.iter().collect();
+            elements.sort_by_key(|(_, element)| element.index);
+            for (name, element) in elements {
+                if found.iter().any(|e| &e.name == name) {
+                    continue;
+                }
+                found.push(ElementRef {
+                    name: name.clone(),
+                    element: element.clone(),
+                    owner: structure.clone(),
+                    path: vec![name.clone()],
+                });
+            }
+            depth += 1;
+            if depth > 16 {
+                break;
+            }
+            current = structure
+                .base
+                .as_deref()
+                .and_then(|base| self.definitions.structure(base));
+        }
+    }
+
     fn lookup_in_structure(&self, structure: Arc<Structure>, name: &str, depth: usize) -> Lookup {
         // A primitive's value: `string.value` in the StructureDefinition, not a separate element
         // in schemas that store primitives as plain JSON values.

@@ -6,18 +6,31 @@ use std::collections::{HashMap, HashSet};
 use fml_syntax::ast::{
     self, AstNode, Expr, Invocation, ParameterMode, QualifiedName, TransformValue,
 };
-use fml_syntax::{Diagnostic, Severity, SyntaxKind, SyntaxNode, TextRange};
+use fml_syntax::{Diagnostic, Severity, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 
+use crate::analysis::{Analysis, Binding, BindingKind, Reference, Referent};
 use crate::definitions::{Definitions, Kind, type_url};
 use crate::types::{Lookup, Type, Types};
 
 /// Checks a parsed map. Syntax errors are not repeated; see [`fml_syntax::Parse::diagnostics`].
 pub fn check(file: &ast::SourceFile, definitions: &dyn Definitions) -> Vec<Diagnostic> {
+    analyze(file, definitions).diagnostics
+}
+
+/// Checks a parsed map and returns, with the problems, its variables and what each name refers
+/// to. Works on maps with syntax errors too, as far as their tree goes.
+pub fn analyze(file: &ast::SourceFile, definitions: &dyn Definitions) -> Analysis {
     let mut checker = Checker::new(file, definitions);
     checker.run();
     let mut diagnostics = checker.diagnostics;
     diagnostics.sort_by_key(|d| (d.range.start(), d.range.end()));
-    diagnostics
+    let mut references: Vec<Reference> = checker.references.into_values().collect();
+    references.sort_by_key(|r| (r.range.start(), r.range.end()));
+    Analysis {
+        diagnostics,
+        bindings: checker.bindings,
+        references,
+    }
 }
 
 /// The reserved keywords of the mapping language (fml.md, "Reserved keywords").
@@ -67,6 +80,8 @@ enum Mode {
 struct Variable {
     ty: Type,
     mode: Mode,
+    /// Its entry in the analysis.
+    binding: Option<usize>,
 }
 
 struct Checker<'a> {
@@ -80,6 +95,11 @@ struct Checker<'a> {
     checked: HashSet<(String, Vec<String>)>,
     reported: HashSet<(TextRange, String)>,
     diagnostics: Vec<Diagnostic>,
+    bindings: Vec<Binding>,
+    /// Bindings by the range of their name: a group checked several times declares its
+    /// variables once.
+    binding_ids: HashMap<TextRange, usize>,
+    references: HashMap<TextRange, Reference>,
 }
 
 impl<'a> Checker<'a> {
@@ -97,6 +117,87 @@ impl<'a> Checker<'a> {
             checked: HashSet::new(),
             reported: HashSet::new(),
             diagnostics: Vec::new(),
+            bindings: Vec::new(),
+            binding_ids: HashMap::new(),
+            references: HashMap::new(),
+        }
+    }
+
+    // ---- Analysis ---------------------------------------------------------------------------
+
+    /// Declares a variable named by `token`, visible in `visible`, and returns it for the scope.
+    fn bind(
+        &mut self,
+        token: Option<SyntaxToken>,
+        kind: BindingKind,
+        visible: TextRange,
+        ty: Type,
+    ) -> Option<(String, Variable)> {
+        let token = token?;
+        let name = ast::name_text(&token);
+        let range = token.text_range();
+        let id = match self.binding_ids.entry(range) {
+            Entry::Occupied(entry) => {
+                let id = *entry.get();
+                let binding = &mut self.bindings[id];
+                if matches!(binding.ty, Type::Unknown) {
+                    binding.ty = ty.clone();
+                }
+                id
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(self.bindings.len());
+                self.bindings.push(Binding {
+                    name: name.clone(),
+                    kind,
+                    definition: range,
+                    visible,
+                    ty: ty.clone(),
+                });
+                self.bindings.len() - 1
+            }
+        };
+        let mode = if kind.is_target() {
+            Mode::Target
+        } else {
+            Mode::Source
+        };
+        Some((
+            name,
+            Variable {
+                ty,
+                mode,
+                binding: Some(id),
+            },
+        ))
+    }
+
+    /// Notes what the name at `range` refers to. A group checked again with known argument
+    /// types fills in the types it did not know the first time.
+    fn refer(&mut self, range: TextRange, referent: Referent, ty: &Type) {
+        match self.references.entry(range) {
+            Entry::Occupied(mut entry) => {
+                if matches!(entry.get().ty, Type::Unknown) && !matches!(ty, Type::Unknown) {
+                    entry.insert(Reference {
+                        range,
+                        referent,
+                        ty: ty.clone(),
+                    });
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(Reference {
+                    range,
+                    referent,
+                    ty: ty.clone(),
+                });
+            }
+        }
+    }
+
+    fn refer_variable(&mut self, range: TextRange, variable: &Variable) {
+        if let Some(id) = variable.binding {
+            self.refer(range, Referent::Binding(id), &variable.ty);
         }
     }
 
@@ -359,20 +460,30 @@ impl<'a> Checker<'a> {
     fn parameter_type(&mut self, parameter: &ast::Parameter) -> Option<Type> {
         let annotation = parameter.type_annotation()?;
         let name = annotation.type_name()?;
-        if let Some(url) = self.type_names.get(&name).cloned() {
-            return Some(self.types().structure(&url));
+        let ty = self.named_type(&annotation, &name);
+        self.refer(
+            annotation_range(&annotation),
+            Referent::Type(ty.clone()),
+            &ty,
+        );
+        Some(ty)
+    }
+
+    fn named_type(&mut self, annotation: &ast::TypeAnnotation, name: &str) -> Type {
+        if let Some(url) = self.type_names.get(name).cloned() {
+            return self.types().structure(&url);
         }
-        let url = type_url(&name, "http://hl7.org/fhir/StructureDefinition/");
+        let url = type_url(name, "http://hl7.org/fhir/StructureDefinition/");
         if let Some(structure) = self.definitions.structure(&url) {
-            return Some(Type::Node {
+            return Type::Node {
                 structure,
                 path: Vec::new(),
-            });
+            };
         }
         if self.definitions.covers(&url) {
             self.error(annotation.syntax(), format!("unknown type `{name}`"));
         }
-        Some(Type::Unknown)
+        Type::Unknown
     }
 
     // ---- Groups -----------------------------------------------------------------------------
@@ -383,15 +494,15 @@ impl<'a> Checker<'a> {
         let name = group.name().unwrap_or_default();
         let parameters: Vec<ast::Parameter> = group.parameters().collect();
         let mut scope = Scope::default();
+        let whole = self.file.syntax().text_range();
         for constant in self.file.constants() {
-            if let Some(constant_name) = constant.name() {
-                scope.define(
-                    constant_name,
-                    Variable {
-                        ty: Type::Unknown,
-                        mode: Mode::Source,
-                    },
-                );
+            if let Some((constant_name, variable)) = self.bind(
+                constant.name_token(),
+                BindingKind::Constant,
+                whole,
+                Type::Unknown,
+            ) {
+                scope.define(constant_name, variable);
             }
         }
         scope.push();
@@ -402,12 +513,17 @@ impl<'a> Checker<'a> {
                 .or_else(|| arguments.get(index).cloned().flatten())
                 .unwrap_or(Type::Unknown);
             key.push(ty.key());
-            let mode = match parameter.mode() {
-                Some(ParameterMode::Target) => Mode::Target,
-                _ => Mode::Source,
+            let kind = match parameter.mode() {
+                Some(ParameterMode::Target) => BindingKind::TargetParameter,
+                _ => BindingKind::SourceParameter,
             };
-            if let Some(parameter_name) = parameter.name() {
-                scope.define(parameter_name, Variable { ty, mode });
+            if let Some((parameter_name, variable)) = self.bind(
+                parameter.name_token(),
+                kind,
+                group.syntax().text_range(),
+                ty,
+            ) {
+                scope.define(parameter_name, variable);
             }
         }
         if !self.checked.insert((name, key)) || depth > MAX_CALL_DEPTH {
@@ -424,8 +540,9 @@ impl<'a> Checker<'a> {
 
     fn check_rule(&mut self, rule: &ast::Rule, outer: &mut Scope, depth: usize) {
         outer.push();
+        let end = rule.syntax().text_range().end();
         for source in rule.sources() {
-            self.check_source(&source, outer);
+            self.check_source(&source, outer, end);
         }
         let fields = rule.identity_fields();
         let targets: Vec<ast::Target> = rule.targets().collect();
@@ -433,7 +550,7 @@ impl<'a> Checker<'a> {
             self.check_identity(rule, &fields, outer);
         }
         for target in &targets {
-            self.check_target(target, outer);
+            self.check_target(target, outer, end);
         }
         if let Some(dependent) = rule.dependent() {
             for invocation in dependent.invocations() {
@@ -448,7 +565,7 @@ impl<'a> Checker<'a> {
         outer.pop();
     }
 
-    fn check_source(&mut self, source: &ast::Source, scope: &mut Scope) {
+    fn check_source(&mut self, source: &ast::Source, scope: &mut Scope, rule_end: TextSize) {
         let Some(path) = source.path() else { return };
         let segments = path.segments();
         let Some(context) = segments.first() else {
@@ -461,6 +578,7 @@ impl<'a> Checker<'a> {
             );
             return;
         };
+        self.refer_variable(segment_range(&path, 0), &variable);
         // A rule reads from source variables; a variable a target made is not one (the engine,
         // like the reference engine, looks the context up among the source variables).
         if variable.mode == Mode::Target {
@@ -477,17 +595,21 @@ impl<'a> Checker<'a> {
             annotated.as_deref(),
             annotation.as_ref(),
         );
+        if let Some(annotation) = &annotation {
+            self.refer(
+                annotation_range(annotation),
+                Referent::Type(ty.clone()),
+                &ty,
+            );
+        }
         if let Some(default) = source.default_value().and_then(|d| d.expression()) {
             self.check_expression(&default, &Type::Unknown, scope);
         }
-        if let Some(alias) = source.alias() {
-            scope.define(
-                alias,
-                Variable {
-                    ty: ty.clone(),
-                    mode: Mode::Source,
-                },
-            );
+        let token = source.alias_token();
+        let visible = visible_until(token.as_ref(), rule_end);
+        if let Some((alias, variable)) = self.bind(token, BindingKind::Source, visible, ty.clone())
+        {
+            scope.define(alias, variable);
         }
         // `where`, `check` and `log` see each item as the focus, and its variable.
         for clause in [
@@ -519,11 +641,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_target(&mut self, target: &ast::Target, scope: &mut Scope) {
+    fn check_target(&mut self, target: &ast::Target, scope: &mut Scope, rule_end: TextSize) {
         let mut ty = Type::Unknown;
-        if let Some(path) = target.path() {
-            let segments = path.segments();
-            let context = &segments[0];
+        if let Some(path) = target.path()
+            && let Some(context) = path.segments().first()
+        {
             match scope.get(context).cloned() {
                 None => {
                     self.error_at(
@@ -532,6 +654,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 Some(variable) => {
+                    self.refer_variable(segment_range(&path, 0), &variable);
                     if variable.mode == Mode::Source {
                         self.error_at(
                             segment_range(&path, 0),
@@ -545,14 +668,10 @@ impl<'a> Checker<'a> {
         if let Some(transform) = target.transform() {
             ty = self.check_transform(&transform, ty, scope);
         }
-        if let Some(alias) = target.alias() {
-            scope.define(
-                alias,
-                Variable {
-                    ty,
-                    mode: Mode::Target,
-                },
-            );
+        let token = target.alias_token();
+        let visible = visible_until(token.as_ref(), rule_end);
+        if let Some((alias, variable)) = self.bind(token, BindingKind::Target, visible, ty) {
+            scope.define(alias, variable);
         }
     }
 
@@ -566,7 +685,14 @@ impl<'a> Checker<'a> {
         match transform {
             TransformValue::Name(name) => {
                 let segments = name.segments();
-                match scope.get(&segments[0]).cloned() {
+                let Some(first) = segments.first() else {
+                    return element;
+                };
+                let variable = scope.get(first).cloned();
+                if let Some(variable) = &variable {
+                    self.refer_variable(segment_range(name, 0), variable);
+                }
+                match variable {
                     Some(variable) if segments.len() == 1 => {
                         if matches!(element, Type::Unknown) {
                             variable.ty
@@ -581,7 +707,7 @@ impl<'a> Checker<'a> {
                     None => {
                         self.error_at(
                             segment_range(name, 0),
-                            format!("unknown variable `{}`", segments[0]),
+                            format!("unknown variable `{first}`"),
                         );
                         element
                     }
@@ -605,6 +731,13 @@ impl<'a> Checker<'a> {
             self.error(invocation.syntax(), format!("unknown transform `{name}`"));
             return element;
         };
+        if let Some(token) = invocation.name_token() {
+            self.refer(
+                token.text_range(),
+                Referent::Transform(name.clone()),
+                &Type::Unknown,
+            );
+        }
         if arguments.len() < min || max.is_some_and(|max| arguments.len() > max) {
             let expected = match max {
                 Some(max) if max == min => format!("{min}"),
@@ -631,16 +764,25 @@ impl<'a> Checker<'a> {
         for (index, argument) in arguments.iter().enumerate() {
             let is_expression = name == "evaluate" && index == 1;
             if !is_expression && argument.syntax().kind() == SyntaxKind::NameRef {
-                let variable = argument.text();
-                if scope.get(&variable).is_none() {
-                    self.error(argument.syntax(), format!("unknown variable `{variable}`"));
+                let name = argument.text();
+                match scope.get(&name).cloned() {
+                    Some(variable) => {
+                        self.refer_variable(trimmed_range(argument.syntax()), &variable)
+                    }
+                    None => self.error(argument.syntax(), format!("unknown variable `{name}`")),
                 }
             }
         }
         if name == "create"
             && let Some(type_name) = arguments.first().and_then(string_literal)
         {
-            return self.created_type(&type_name, &element, &arguments[0]);
+            let created = self.created_type(&type_name, &element, &arguments[0]);
+            self.refer(
+                trimmed_range(arguments[0].syntax()),
+                Referent::Type(created.clone()),
+                &created,
+            );
+            return created;
         }
         element
     }
@@ -700,17 +842,27 @@ impl<'a> Checker<'a> {
         let mut types = Vec::new();
         for argument in &arguments {
             if argument.syntax().kind() == SyntaxKind::NameRef {
-                let variable = argument.text();
-                match scope.get(&variable) {
-                    Some(v) => types.push(Some(v.ty.clone())),
+                let name = argument.text();
+                match scope.get(&name).cloned() {
+                    Some(variable) => {
+                        self.refer_variable(trimmed_range(argument.syntax()), &variable);
+                        types.push(Some(variable.ty));
+                    }
                     None => {
-                        self.error(argument.syntax(), format!("unknown variable `{variable}`"));
+                        self.error(argument.syntax(), format!("unknown variable `{name}`"));
                         types.push(None);
                     }
                 }
             } else {
                 types.push(None);
             }
+        }
+        if let Some(token) = invocation.name_token() {
+            self.refer(
+                token.text_range(),
+                Referent::Group(name.clone()),
+                &Type::Unknown,
+            );
         }
         let Some(group) = self.groups.get(&name).cloned() else {
             if !self.has_imports {
@@ -761,7 +913,8 @@ impl<'a> Checker<'a> {
                     };
                 }
                 let name = ast::name_text(&token);
-                if let Some(variable) = scope.get(&name) {
+                if let Some(variable) = scope.get(&name).cloned() {
+                    self.refer_variable(trimmed_range(node), &variable);
                     // A variable hides an element of the focus with the same name: almost always
                     // a slip (`src.code as code where (code.exists())` tests the variable).
                     // A primitive's own `value` is the primitive: no difference there.
@@ -773,7 +926,7 @@ impl<'a> Checker<'a> {
                         );
                         self.report(Severity::Warning, trimmed_range(node), message);
                     }
-                    return variable.ty.clone();
+                    return variable.ty;
                 }
                 // `Patient.name` on a Patient: the type name selects the focus itself.
                 if focus.fhir_type().as_deref() == Some(name.as_str()) {
@@ -826,7 +979,11 @@ impl<'a> Checker<'a> {
 
     fn element_of(&mut self, ty: &Type, name: &str, at: &SyntaxNode) -> Type {
         match self.types().lookup(ty, name) {
-            Lookup::Found(found) => self.types().element_type(&found, None),
+            Lookup::Found(found) => {
+                let element = self.types().element_type(&found, None);
+                self.refer(trimmed_range(at), Referent::Element(found), &element);
+                element
+            }
             Lookup::Missing => {
                 let message = format!("`{}` has no element `{name}`", ty.display());
                 self.report(Severity::Warning, trimmed_range(at), message);
@@ -919,7 +1076,13 @@ impl<'a> Checker<'a> {
                             ),
                         );
                     }
-                    self.types().element_type(&found, chosen)
+                    let element = self.types().element_type(&found, chosen);
+                    self.refer(
+                        segment_range(path, index),
+                        Referent::Element(found),
+                        &element,
+                    );
+                    element
                 }
             };
         }
@@ -978,6 +1141,27 @@ impl Scope {
 
     fn get(&self, name: &str) -> Option<&Variable> {
         self.frames.iter().rev().find_map(|frame| frame.get(name))
+    }
+}
+
+/// The type name of a `: Type` annotation, without the colon.
+fn annotation_range(annotation: &ast::TypeAnnotation) -> TextRange {
+    annotation
+        .syntax()
+        .children()
+        .next()
+        .map(|name| trimmed_range(&name))
+        .unwrap_or_else(|| trimmed_range(annotation.syntax()))
+}
+
+/// Where an alias declared by `token` can be used: from the alias to the end of its rule.
+fn visible_until(token: Option<&SyntaxToken>, rule_end: TextSize) -> TextRange {
+    match token {
+        Some(token) => TextRange::new(
+            token.text_range().end(),
+            rule_end.max(token.text_range().end()),
+        ),
+        None => TextRange::empty(rule_end),
     }
 }
 

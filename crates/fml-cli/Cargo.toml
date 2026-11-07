@@ -16,7 +16,13 @@ categories = ["command-line-utilities", "development-tools"]
 name = "fml"
 path = "src/main.rs"
 
+[features]
+default = ["lsp"]
+# `fml lsp`: the language server over standard input and output.
+lsp = ["dep:fml-lsp"]
+
 [dependencies]
+fml-lsp = { path = "../fml-lsp", version = "0.2.4", optional = true }
 fml-syntax = { path = "../fml-syntax", version = "0.2.4" }
 fml-model = { path = "../fml-model", version = "0.2.4" }
 fml-check = { path = "../fml-check", version = "0.2.4", features = ["fhirschema"] }

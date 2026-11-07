@@ -38,4 +38,9 @@ for diagnostic in check(&parse.tree(), &CoreDefinitions::new(Release::R5)) {
 }
 ```
 
+`analyze` returns the same problems plus what an editor needs: every variable with where it is
+declared, where it can be used and its type, and what each name in the map refers to (a variable, an
+element with its type, a group, a transform, a type). `Types::elements` lists the elements of a type.
+The [fml-lsp](https://crates.io/crates/fml-lsp) language server is built on them.
+
 Part of [fml-rs](https://github.com/octofhir/fml-rs). Licensed under MIT or Apache-2.0.

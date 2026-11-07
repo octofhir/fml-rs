@@ -50,10 +50,14 @@ fn tokens(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + use<> {
 
 /// The text of the first name token directly under `node` that is not one of `skip`.
 fn name_after(node: &SyntaxNode, skip: &[&str]) -> Option<String> {
+    name_token_after(node, skip).map(|t| name_text(&t))
+}
+
+/// The first name token directly under `node` that is not one of `skip`.
+fn name_token_after(node: &SyntaxNode, skip: &[&str]) -> Option<SyntaxToken> {
     tokens(node)
         .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::DelimitedIdent))
         .find(|t| !skip.contains(&t.text()))
-        .map(|t| name_text(&t))
 }
 
 /// The name a token spells: the identifier, or the content of a `` `delimited` `` identifier.
@@ -341,11 +345,16 @@ impl UsesDeclaration {
     }
 
     pub fn alias(&self) -> Option<String> {
+        self.alias_token().map(|t| name_text(&t))
+    }
+
+    /// The token of the alias name, for its position.
+    pub fn alias_token(&self) -> Option<SyntaxToken> {
         let alias = self
             .0
             .children()
             .find(|n| n.kind() == SyntaxKind::UsesAlias)?;
-        name_after(&alias, &["alias"])
+        name_token_after(&alias, &["alias"])
     }
 
     pub fn mode(&self) -> Option<ModelMode> {
@@ -384,6 +393,10 @@ impl ConstantDeclaration {
         name_after(&self.0, &["let"])
     }
 
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        name_token_after(&self.0, &["let"])
+    }
+
     pub fn expression(&self) -> Option<Expr> {
         child(&self.0)
     }
@@ -411,6 +424,10 @@ impl Group {
         name_after(&self.0, &["group"])
     }
 
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        name_token_after(&self.0, &["group"])
+    }
+
     pub fn parameters(&self) -> impl Iterator<Item = Parameter> + use<> {
         child::<ParameterList>(&self.0)
             .into_iter()
@@ -418,11 +435,16 @@ impl Group {
     }
 
     pub fn extends(&self) -> Option<String> {
+        self.extends_token().map(|t| name_text(&t))
+    }
+
+    /// The token of the extended group's name, for its position.
+    pub fn extends_token(&self) -> Option<SyntaxToken> {
         let clause = self
             .0
             .children()
             .find(|n| n.kind() == SyntaxKind::ExtendsClause)?;
-        name_after(&clause, &["extends"])
+        name_token_after(&clause, &["extends"])
     }
 
     pub fn type_mode(&self) -> Option<GroupTypeMode> {
@@ -474,10 +496,13 @@ impl Parameter {
     }
 
     pub fn name(&self) -> Option<String> {
+        self.name_token().map(|t| name_text(&t))
+    }
+
+    pub fn name_token(&self) -> Option<SyntaxToken> {
         tokens(&self.0)
             .nth(1)
             .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::DelimitedIdent))
-            .map(|t| name_text(&t))
     }
 
     pub fn type_annotation(&self) -> Option<TypeAnnotation> {
@@ -640,6 +665,11 @@ impl Source {
         child::<Alias>(&self.0).and_then(|a| a.name())
     }
 
+    /// The token of the alias name, for its position.
+    pub fn alias_token(&self) -> Option<SyntaxToken> {
+        child::<Alias>(&self.0).and_then(|a| a.name_token())
+    }
+
     pub fn where_clause(&self) -> Option<Expr> {
         self.clause(SyntaxKind::WhereClause)
     }
@@ -680,6 +710,10 @@ impl Alias {
     pub fn name(&self) -> Option<String> {
         name_after(&self.0, &["as"])
     }
+
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        name_token_after(&self.0, &["as"])
+    }
 }
 
 ast_node!(
@@ -713,6 +747,11 @@ impl Target {
 
     pub fn alias(&self) -> Option<String> {
         child::<Alias>(&self.0).and_then(|a| a.name())
+    }
+
+    /// The token of the alias name, for its position.
+    pub fn alias_token(&self) -> Option<SyntaxToken> {
+        child::<Alias>(&self.0).and_then(|a| a.name_token())
     }
 
     pub fn list_mode(&self) -> Option<ListMode> {
@@ -771,7 +810,11 @@ ast_node!(
 
 impl Invocation {
     pub fn name(&self) -> Option<String> {
-        tokens(&self.0).next().map(|t| name_text(&t))
+        self.name_token().map(|t| name_text(&t))
+    }
+
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        tokens(&self.0).next()
     }
 
     pub fn arguments(&self) -> impl Iterator<Item = Expr> + use<> {

@@ -24,6 +24,7 @@ fml run map.fml in.json --debug    # the $transform debug trace, as Parameters
 fml run map.fml in.json --bundle   # the target and the resources the map produced
 fml check --package hl7.fhir.us.core@6.1.0 maps/
                                    # with the profiles and extensions of a FHIR package
+fml lsp --fhir r4                  # language server for editors, over stdio
 ```
 
 What each command is built on:
@@ -38,5 +39,8 @@ What each command is built on:
 - `run`: the [fml-engine](https://crates.io/crates/fml-engine) StructureMap engine with FHIRPath;
   `--maps` and `--package` bring imported StructureMaps and ConceptMaps, `--debug` writes the
   trace, `--bundle` a collection Bundle with the resources the map produced.
+- `lsp`: the [fml-lsp](https://crates.io/crates/fml-lsp) language server over standard input and
+  output, with the `--fhir` and `--package` options of `check`. It is the default `lsp` feature;
+  `--no-default-features` builds without it.
 
 Part of [fml-rs](https://github.com/octofhir/fml-rs). Licensed under MIT or Apache-2.0.

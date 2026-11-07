@@ -103,7 +103,7 @@ jobs:
         # half way (the index slow to show a dependency) can run again and publish the rest.
         run: |
           version="${{ needs.version.outputs.next }}"
-          for crate in fml-syntax fml-xml fml-model fml-check fml-engine fml-cli; do
+          for crate in fml-syntax fml-xml fml-model fml-check fml-engine fml-lsp fml-cli; do
             code=$(curl -s -o /dev/null -w '%{http_code}' -A "fml-rs-release" \
               "https://crates.io/api/v1/crates/$crate/$version")
             if [ "$code" = "200" ]; then
@@ -136,7 +136,7 @@ jobs:
             echo "cargo install fml-cli --version ${{ needs.version.outputs.next }}"
             echo '```'
             echo
-            echo "Or download a binary below. Crates: fml-syntax, fml-model, fml-check, fml-engine, fml-cli."
+            echo "Or download a binary below. Crates: fml-syntax, fml-model, fml-check, fml-engine, fml-lsp, fml-cli."
           } > notes.md
       - uses: actions/download-artifact@v4
         with:

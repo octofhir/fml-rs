@@ -1,0 +1,30 @@
+[package]
+name = "fml-lsp"
+description = "Language server for the FHIR Mapping Language: diagnostics, completion, hover, go to definition, references, rename, symbols, signature help and formatting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["fhir", "fml", "structuremap", "lsp", "language-server"]
+categories = ["development-tools"]
+
+[features]
+default = []
+# Core FHIR definitions (R4, R4B, R5, R6), for `Server::with_release`.
+fhirschema = ["fml-check/fhirschema"]
+
+[dependencies]
+fml-syntax = { path = "../fml-syntax", version = "0.2.4" }
+fml-model = { path = "../fml-model", version = "0.2.4" }
+fml-check = { path = "../fml-check", version = "0.2.4" }
+# The lsp-types that async-lsp 0.2 re-exports, so servers built on it share the types.
+lsp-types = "0.95"
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+fml-check = { path = "../fml-check", features = ["fhirschema"] }

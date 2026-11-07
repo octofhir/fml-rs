@@ -35,7 +35,7 @@ pub use format::{
 };
 pub use kind::{FmlLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 pub use lexer::{Token, tokenize};
-pub use rowan::{Direction, NodeOrToken, TextRange, TextSize};
+pub use rowan::{Direction, NodeOrToken, TextRange, TextSize, TokenAtOffset};
 
 /// The result of parsing: a syntax tree that covers the whole input, plus the problems found.
 #[derive(Debug, Clone)]

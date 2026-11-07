@@ -30,6 +30,7 @@
 //! # }
 //! ```
 
+pub mod analysis;
 mod check;
 #[cfg(feature = "fhirschema")]
 mod core;
@@ -40,7 +41,8 @@ mod logical;
 mod package;
 pub mod types;
 
-pub use check::check;
+pub use analysis::{Analysis, Binding, BindingKind, Reference, Referent};
+pub use check::{analyze, check};
 #[cfg(feature = "fhirschema")]
 pub use core::{CoreDefinitions, Release};
 pub use definitions::{Definitions, Element, Kind, NoDefinitions, Structure, TemplateId};

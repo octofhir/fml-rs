@@ -72,6 +72,7 @@ fml run cda-to-fhir.map document.xml --fhir r4 --package hl7.cda.uv.core@2.0.3-s
                                    # XML of a logical model in (and out, when the target is one)
 fml xml read document.xml --package hl7.cda.uv.core@2.0.3-sd
                                    # the JSON a map sees; what it cannot read, on stderr
+fml lsp --fhir r4                  # language server for editors, over stdio
 ```
 
 ## The crates
@@ -83,6 +84,7 @@ fml xml read document.xml --package hl7.cda.uv.core@2.0.3-sd
 | [`fml-check`](crates/fml-check) | Type checker against FHIR R4, R4B, R5 and R6 definitions and FHIR packages: paths, types, variables, group calls, FHIRPath paths. |
 | [`fml-engine`](crates/fml-engine) | StructureMap engine over FHIR JSON, with FHIRPath, imported maps, ConceptMaps and a debug trace. |
 | [`fml-xml`](crates/fml-xml) | XML of logical models (CDA) to the JSON maps run on and back, as the model's StructureDefinitions describe it. |
+| [`fml-lsp`](crates/fml-lsp) | Language server: diagnostics, completion, hover, definition, references, rename, signature help, outline, formatting, semantic tokens. |
 | [`fml-cli`](crates/fml-cli) | The `fml` binary. |
 
 ```rust
@@ -146,14 +148,9 @@ where a failure happened.
 
 ## Not yet
 
-- Releases to crates.io (the release workflow is ready).
-- XML, and with it CDA and the CDA test cases: the tools read and write FHIR JSON.
 - The `dateOp` transform, which the IG lists without defining, and time zone names (`z`) in
   date formats.
-- WebAssembly, and a language server.
-
-Next: StructureMap `$transform` and version conversion in the
-[OctoFHIR](https://github.com/octofhir/server-rs) server.
+- WebAssembly.
 
 ## Testing
 

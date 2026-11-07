@@ -112,6 +112,16 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Run the language server over standard input and output, for editors.
+    #[cfg(feature = "lsp")]
+    Lsp {
+        /// FHIR release that unversioned core URLs refer to: r4, r4b, r5 or r6.
+        #[arg(long, default_value = "r5", value_parser = parse_release)]
+        fhir: Release,
+        /// FHIR packages with more definitions: a folder, or `name@version`.
+        #[arg(long = "package")]
+        packages: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -213,6 +223,8 @@ fn main() -> ExitCode {
             },
         ),
         Command::Xml { action } => xml(action),
+        #[cfg(feature = "lsp")]
+        Command::Lsp { fhir, packages } => lsp(fhir, &packages),
     };
     match result {
         Ok(code) => code,
@@ -224,6 +236,18 @@ fn main() -> ExitCode {
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[cfg(feature = "lsp")]
+fn lsp(release: Release, packages: &[String]) -> Result<ExitCode> {
+    let (definitions, _) = definitions_with(release, packages)?;
+    let server = fml_lsp::Server::new(std::sync::Arc::new(definitions));
+    let code = fml_lsp::run_stdio(server)?;
+    Ok(if code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
 
 /// Expands directories to the `.fml` and `.map` files inside them.
 fn files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {

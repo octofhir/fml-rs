@@ -226,3 +226,68 @@ group S(source src : Patient, target tgt : Basic) {
         "7:36 `text` here is the variable `text`, not the element `text` of the focus; rename the variable, or write `$this.text` for the element"
     );
 }
+
+#[test]
+fn analysis_knows_variables_and_elements() {
+    use fml_check::{BindingKind, Referent, Types, analyze};
+    let source = r#"uses "http://hl7.org/fhir/StructureDefinition/Patient" alias P as source
+uses "http://hl7.org/fhir/StructureDefinition/Basic" alias B as target
+
+group Main(source src : P, target tgt : B) {
+  src.name as n -> tgt.code as c then Name(n, c);
+}
+
+group Name(source n, target c) {
+  n.family as f where (f.length() > 1) -> c.text = f;
+}
+"#;
+    let parse = parse(source);
+    let definitions = CoreDefinitions::new(Release::R5);
+    let analysis = analyze(&parse.tree(), &definitions);
+    let offset = |needle: &str, nth: usize| {
+        let at = source.match_indices(needle).nth(nth).unwrap().0;
+        fml_syntax::TextSize::from(at as u32)
+    };
+
+    // The untyped parameter `n` of `Name` takes the type it is called with.
+    let (_, n) = analysis
+        .binding_at(offset("source n", 0) + fml_syntax::TextSize::from(7))
+        .unwrap();
+    assert_eq!(n.kind, BindingKind::SourceParameter);
+    assert_eq!(n.ty.display(), "HumanName");
+
+    // `n.family` in `Name` is an element of HumanName.
+    let family = analysis.reference_at(offset("family", 0)).unwrap();
+    let Referent::Element(element) = &family.referent else {
+        panic!("{:?}", family.referent)
+    };
+    assert_eq!(element.name, "family");
+    assert_eq!(family.ty.display(), "string");
+
+    // `f` in the where clause and after `=` refers to the alias.
+    let (alias, _) = analysis
+        .binding_at(offset("as f", 0) + fml_syntax::TextSize::from(3))
+        .unwrap();
+    assert_eq!(analysis.references_to(alias).count(), 2);
+
+    // The group call.
+    let call = analysis.reference_at(offset("Name(n", 0)).unwrap();
+    assert!(matches!(&call.referent, Referent::Group(name) if name == "Name"));
+
+    // Inside the first rule: the parameters and both aliases.
+    let names: Vec<&str> = analysis
+        .bindings_at(offset("then", 0))
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(names, ["src", "tgt", "n", "c"]);
+
+    // Completion candidates for `n.`.
+    let elements = Types::new(&definitions).elements(&n.ty);
+    let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
+    assert!(
+        names.starts_with(&["use", "text", "family", "given"]),
+        "{names:?}"
+    );
+    assert!(names.contains(&"extension"));
+}
