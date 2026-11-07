@@ -18,7 +18,13 @@ runs maps over FHIR JSON, the way the HL7 reference engine does.
   `reference`, `pointer`, `uuid`, `cc`, `c`, `id`, `cp`, `qty`, `escape` (html, xml, json), and
   the IG's date and time transforms: `toDateTime`, `toDate`, `toTime` with format patterns
   (`dd/MM/yyyy HH:mm`, `MMMM d, yyyy`, …) and `unixToDateTime`, `unixToDate`, `unixToTime`.
-  Not yet: `dateOp`, which the IG lists without defining.
+  Time zones can be named, with `z` in a format or as the timezone of `unixTo*`: IANA ids
+  (`America/New_York`), Windows names (`Eastern Standard Time`) and abbreviations that name one
+  offset (`EST`, `CEST`). The result has the offset in force at that date, daylight saving
+  included. Abbreviations shared by several zones (`CST`, `IST`) are refused.
+  `dateOp` is listed among the StructureMap transforms, but neither the IG nor the transform codes
+  define it ("Parameters to be documented"), so it is refused with that reason and `fml check`
+  warns about it.
 - **Produced resources.** Resources a map creates outside the target (a `create` with no target
   element) come back in `produced`, ready for a Bundle.
 - **Follows the IG where it says more than the reference engine.** Named groups and nested rules

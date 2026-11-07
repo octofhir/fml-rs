@@ -738,6 +738,12 @@ impl<'a> Checker<'a> {
                 &Type::Unknown,
             );
         }
+        if name == "dateOp" {
+            self.warning(
+                invocation.syntax(),
+                "`dateOp` is not defined: neither the Mapping Language IG nor the StructureMap transform codes say what its parameters are or what it does, so no engine can run it; use toDate, toDateTime, toTime or a FHIRPath expression",
+            );
+        }
         if arguments.len() < min || max.is_some_and(|max| arguments.len() > max) {
             let expected = match max {
                 Some(max) if max == min => format!("{min}"),

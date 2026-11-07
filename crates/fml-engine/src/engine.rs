@@ -35,6 +35,9 @@ use crate::trace::{Phase, Trace, TraceEvent, TraceStatus, TraceVariable};
 use crate::tree::{NodeId, Tree};
 use crate::{datetime, transforms};
 
+/// Why `dateOp` cannot run; the checker warns about it too.
+pub(crate) const DATE_OP_UNDEFINED: &str = "dateOp is listed among the StructureMap transforms, but neither the Mapping Language IG nor the transform code system defines its parameters or what it does (\"Parameters to be documented\"); use toDate, toDateTime, toTime or a FHIRPath expression instead";
+
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// A failed transform.
@@ -1625,6 +1628,7 @@ impl<'a, X: Expressions> Engine<'a, X> {
                 let node = run.tree.load(&json, ty, &types);
                 Ok(Some(node))
             }
+            "dateOp" => Err(fail(DATE_OP_UNDEFINED.into())),
             other => Err(fail(format!("the {other} transform is not supported"))),
         }
     }

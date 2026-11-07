@@ -7,7 +7,10 @@
 //!
 //! Results are FHIR primitive values. They keep the precision of the input: `toDateTime('2024-05',
 //! 'yyyy-MM')` is `2024-05`, and a time zone appears only when the input had one, so nothing is
-//! invented.
+//! invented. A zone named in the input (`z`: `America/New_York`, `Eastern Standard Time`, `EST`)
+//! becomes the offset in force at that date and time; see [`crate::timezone`].
+
+use crate::timezone::{read_zone, zone};
 
 /// The parts of a date and time that a format matched.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -22,6 +25,8 @@ struct Parts {
     pm: Option<bool>,
     /// `Z`, or an offset such as `+02:00`.
     zone: Option<String>,
+    /// A zone named by `z`, resolved to an offset once the date and time are known.
+    zone_name: Option<String>,
 }
 
 const MONTHS: [&str; 12] = [
@@ -153,9 +158,10 @@ fn parse(input: &str, format: &str) -> Result<Parts, String> {
                 }
             }
             "z" => {
-                return Err(format!(
-                    "time zone names (`z`) are not supported; use an offset (`Z`) in `{format}`"
-                ));
+                let (_, length) = read_zone(rest)
+                    .map_err(|problem| format!("`{input}` does not match `{format}`: {problem}"))?;
+                parts.zone_name = Some(rest[..length].to_owned());
+                rest = &rest[length..];
             }
             other => return Err(format!("unknown format code `{other}` in `{format}`")),
         }
@@ -175,6 +181,22 @@ fn parse(input: &str, format: &str) -> Result<Parts, String> {
         });
     }
     validate(&parts).map_err(|_| fail())?;
+    if let Some(name) = &parts.zone_name
+        && parts.zone.is_none()
+        && let (Some(year), Some(month), Some(day), Some(hour)) =
+            (parts.year, parts.month, parts.day, parts.hour)
+    {
+        let named = zone(name)?;
+        let offset = named.offset_at_local(
+            year,
+            month,
+            day,
+            hour,
+            parts.minute.unwrap_or(0),
+            parts.second.unwrap_or(0),
+        )?;
+        parts.zone = Some(named.text(offset));
+    }
     Ok(parts)
 }
 
@@ -336,13 +358,23 @@ fn from_unix(millis: i64, timezone: Option<&str>) -> Result<(String, String, Str
     let (offset, zone) = match timezone {
         None | Some("Z") => (0, "Z".to_owned()),
         Some(text) => {
-            let parts = parse(text, "Z")
-                .map_err(|_| format!("`{text}` is not a time zone offset such as +10:00"))?;
-            let zone = parts.zone.unwrap_or_default();
-            let sign = if zone.starts_with('-') { -1 } else { 1 };
-            let hours: i64 = zone[1..3].parse().unwrap_or(0);
-            let minutes: i64 = zone[4..6].parse().unwrap_or(0);
-            (sign * (hours * 3600 + minutes * 60), zone)
+            match parse(text, "Z") {
+                Ok(parts) => {
+                    let zone = parts.zone.unwrap_or_default();
+                    let sign = if zone.starts_with('-') { -1 } else { 1 };
+                    let hours: i64 = zone[1..3].parse().unwrap_or(0);
+                    let minutes: i64 = zone[4..6].parse().unwrap_or(0);
+                    (sign * (hours * 3600 + minutes * 60), zone)
+                }
+                // A zone name: the offset in force at that instant.
+                Err(_) => {
+                    let named = zone(text).map_err(|problem| {
+                    format!("`{text}` is neither an offset such as +10:00 nor a time zone: {problem}")
+                })?;
+                    let offset = named.offset_at(seconds)?;
+                    (i64::from(offset), named.text(offset))
+                }
+            }
         }
     };
     let local = seconds + offset;
@@ -479,7 +511,47 @@ mod tests {
         assert!(to_date("2023-02-29", Some("yyyy-MM-dd")).is_err());
         assert!(to_date("2024-05-01x", Some("yyyy-MM-dd")).is_err());
         assert!(to_date_time("2024", Some("yy")).is_err());
-        assert!(to_date_time("12:00 PST", Some("HH:mm z")).is_err());
+        assert!(to_date_time("2024-01-15 12:00 CST", Some("yyyy-MM-dd HH:mm z")).is_err());
+        assert!(to_date_time("2024-01-15 12:00 Mars/Olympus", Some("yyyy-MM-dd HH:mm z")).is_err());
+    }
+
+    #[test]
+    fn time_zone_names_become_offsets() {
+        let at = |input: &str| to_date_time(input, Some("yyyy-MM-dd HH:mm z")).unwrap();
+        // IANA ids, with daylight saving.
+        assert_eq!(
+            at("2024-01-15 12:00 America/Los_Angeles"),
+            "2024-01-15T12:00:00-08:00"
+        );
+        assert_eq!(
+            at("2024-07-15 12:00 America/Los_Angeles"),
+            "2024-07-15T12:00:00-07:00"
+        );
+        assert_eq!(
+            at("2024-07-15 12:00 Asia/Kolkata"),
+            "2024-07-15T12:00:00+05:30"
+        );
+        // Windows names and abbreviations, as the IG's examples.
+        assert_eq!(
+            at("2024-01-15 12:00 Pacific Standard Time"),
+            "2024-01-15T12:00:00-08:00"
+        );
+        assert_eq!(
+            at("2024-07-15 12:00 Pacific Standard Time"),
+            "2024-07-15T12:00:00-07:00"
+        );
+        assert_eq!(at("2024-01-15 12:00 PST"), "2024-01-15T12:00:00-08:00");
+        assert_eq!(at("2024-01-15 12:00 UTC"), "2024-01-15T12:00:00Z");
+        // A gap in spring and an overlap in autumn: the offset before the change.
+        assert_eq!(
+            at("2024-03-10 02:30 America/New_York"),
+            "2024-03-10T02:30:00-05:00"
+        );
+        // A date alone carries no zone.
+        assert_eq!(
+            to_date("2024-01-15 Europe/Paris", Some("yyyy-MM-dd z")).unwrap(),
+            "2024-01-15"
+        );
     }
 
     #[test]
@@ -513,6 +585,15 @@ mod tests {
             unix_to_date(-86_400_000, Some("-05:00")).unwrap(),
             "1969-12-30"
         );
+        assert_eq!(
+            unix_to_date_time(1_714_570_200_000, Some("Australia/Sydney")).unwrap(),
+            "2024-05-01T23:30:00+10:00"
+        );
+        assert_eq!(
+            unix_to_date_time(1_704_067_200_000, Some("Australia/Sydney")).unwrap(),
+            "2024-01-01T11:00:00+11:00"
+        );
+        assert!(unix_to_date_time(0, Some("IST")).is_err());
     }
 
     #[test]

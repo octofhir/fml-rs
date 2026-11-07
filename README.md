@@ -146,11 +146,10 @@ trace of the IG's debug page for `$transform?debug=true`: events with depth, pos
 and variables, `traceStatus` (`complete`, `truncated`, `stopped`), and an `outcome` that says
 where a failure happened.
 
-## Not yet
+## WebAssembly
 
-- The `dateOp` transform, which the IG lists without defining, and time zone names (`z`) in
-  date formats.
-- WebAssembly.
+The crates build for `wasm32-unknown-unknown`. [`@octofhir/wasm`](https://www.npmjs.com/package/@octofhir/wasm)
+on npm carries them to JavaScript, together with the validator, FHIRPath, SQL on FHIR and UCUM.
 
 ## Testing
 
