@@ -1,4 +1,4 @@
-//! Настройка FHIR-сервера через публичный CLI; HTTP-запросы идут только на localhost.
+//! FHIR server configuration through the public CLI; HTTP requests only target localhost.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;

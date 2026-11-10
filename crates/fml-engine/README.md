@@ -64,18 +64,19 @@ let output = Engine::new(&definitions, expressions)
 println!("{}", output.target);        // also: output.produced, output.warnings
 ```
 
-## Доступ к FHIR-серверу
+## FHIR server access
 
-С фичей `fhirpath` метод `FhirPathExpressions::with_server_provider` принимает
-`Arc<dyn ServerProvider>` из `octofhir-fhir-model` (тип также доступен как
-`fml_engine::ServerProvider`). Он подключает существующий механизм FHIRPath:
-`resolve()` сначала ищет ресурс в текущем дереве, затем вызывает `read` провайдера
-для ссылки `Type/id`. Найденный ресурс сохраняет свой FHIR-тип. Неразрешённые ссылки
-дают пустой результат, как требует [спецификация](https://hl7.org/fhir/R5/fhirpath.html#functions).
-Абсолютные и версионные ссылки, а также поиск по canonical этим адаптером не добавляются.
+With the `fhirpath` feature, `FhirPathExpressions::with_server_provider` accepts
+an `Arc<dyn ServerProvider>` from `octofhir-fhir-model`, also exported as
+`fml_engine::ServerProvider`. It connects the existing FHIRPath mechanism:
+`resolve()` first looks in the current resource tree, then calls the provider's
+`read` for a `Type/id` reference. Resolved resources retain their FHIR types.
+Unresolved references return an empty result, as the [specification](https://hl7.org/fhir/R5/fhirpath.html#functions)
+requires. This adapter does not add absolute or versioned reference resolution,
+or canonical lookup.
 
-Внутри FHIR-сервера провайдер должен вызывать внутренние сервисы с правами текущего
-пользователя, а не ходить по HTTP в самого себя. Движок можно переиспользовать:
+Inside a FHIR server, the provider should call internal services with the caller's
+permissions, rather than make HTTP requests back to the same server. Reuse the engine:
 
 ```rust
 let shared_expressions = FhirPathExpressions::new(Release::R5).await?;
@@ -85,24 +86,24 @@ let output = Engine::new(&definitions, expressions)
     .await?;
 ```
 
-Клоны разделяют движок, схемы и кэш выражений; провайдер и контекст вычисления
-не подменяются у других клонов. Не храните провайдер с правами пользователя
-в общем экземпляре. Это соответствует [модели выполнения FML](https://hl7.org/fhir/R5/mapping-language.html):
-доступ к внешним данным предоставляет вызывающее приложение.
+Clones share the engine, schemas and expression cache, but configuring one clone's
+provider does not change another clone's provider or evaluation context. Do not put
+a caller-specific provider in the shared instance. This follows the [FML execution model](https://hl7.org/fhir/R5/mapping-language.html):
+the host application supplies access to external data.
 
-Для отдельного приложения подойдёт `octofhir_fhir_model::HttpServerProvider`
-с фичей `http-client` **в приложении**. Библиотека `fml-engine` сама HTTP не включает.
-Без провайдера внешние запросы отключены.
+Standalone applications can use `octofhir_fhir_model::HttpServerProvider`, enabling
+`http-client` **in the application**. The `fml-engine` library does not enable HTTP.
+External requests are disabled without a provider.
 
-Провайдер также доступен через `%server`, включая операции записи. Для недоверенных
-карт используйте провайдер с ограниченными правами; лимиты движка не заменяют
-авторизацию. Текущий FHIRPath превращает ошибки `read` в пустой результат:
-если вызывающее приложение должно завершать операцию при такой ошибке, сохраняйте
-её в провайдере и проверяйте после выполнения карты.
+The provider is also available through `%server`, including write operations. Use
+a restricted provider for untrusted maps; engine limits do not replace authorization.
+The current FHIRPath implementation turns `read` errors into empty results. If the
+host must fail the operation on such an error, retain it in the provider and check
+it after the map finishes.
 
-Подключение сервера не восстанавливает корневой контекст для `contained`: при
-`evaluate(reference, resolve())` исходный ресурс по-прежнему недоступен.
-Для локальных ссылок вычисляйте путь от ресурса, например
+Connecting a server does not restore the root context for `contained` resources:
+`evaluate(reference, resolve())` still cannot see the original resource. For local
+references, evaluate the path from the resource, for example
 `evaluate(src, bodyStructure.reference.resolve())`.
 
 Part of [fml-rs](https://github.com/octofhir/fml-rs). Licensed under MIT or Apache-2.0.

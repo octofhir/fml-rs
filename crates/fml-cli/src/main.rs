@@ -99,8 +99,8 @@ enum Command {
         /// model with an XML form, JSON otherwise.
         #[arg(long, value_enum)]
         output_format: Option<DataFormat>,
-        /// Базовый URL FHIR-сервера для resolve() и %server. Включает доступ к серверу,
-        /// в том числе изменение ресурсов через %server; запускайте только доверенные карты.
+        /// FHIR server base URL for resolve() and %server. Enables server access,
+        /// including writes through %server; only use with trusted maps.
         #[arg(long, value_parser = parse_server_url)]
         server_url: Option<url::Url>,
     },
@@ -604,7 +604,7 @@ fn load_map(path: &Path, sources: &mut Sources) -> Result<fml_model::StructureMa
     Ok(compiled.map)
 }
 
-/// Настройки выполнения и вывода `fml run`.
+/// Execution and output options for `fml run`.
 struct RunOptions {
     debug: bool,
     bundle: bool,

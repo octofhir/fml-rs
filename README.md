@@ -67,7 +67,7 @@ fml run Patient4to5.fml patient.json --maps R4toR5/ --maps codes/
 fml run map.fml in.json --debug    # the $transform debug trace, as Parameters
 fml run map.fml in.json --bundle   # the target and the resources the map produced
 fml run map.fml in.json --server-url https://example.org/fhir
-                                   # внешний FHIR-сервер для resolve() и %server
+                                   # external FHIR server for resolve() and %server
 fml check --package hl7.fhir.us.core@6.1.0 maps/
                                    # with the profiles and extensions of a FHIR package
 fml run cda-to-fhir.map document.xml --fhir r4 --package hl7.cda.uv.core@2.0.3-sd

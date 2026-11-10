@@ -31,10 +31,10 @@ impl FhirPathExpressions {
         Self::with_templates(release, HashMap::new()).await
     }
 
-    /// Подключает сервер для `resolve()` и `%server` через существующий API FHIRPath.
-    /// Без провайдера внешние запросы отключены. Права доступа задаёт провайдер:
-    /// `%server` поддерживает не только чтение, но и изменение ресурсов.
-    /// Клон разделяет движок и схемы, но провайдера можно задать отдельно для каждого запроса.
+    /// Connects a server for `resolve()` and `%server` through the existing FHIRPath API.
+    /// External requests are disabled without a provider. The provider controls permissions:
+    /// `%server` supports writes as well as reads. Clones share the engine and schemas,
+    /// but each request can have its own provider.
     pub fn with_server_provider(mut self, provider: Arc<dyn ServerProvider>) -> Self {
         self.server = Some(provider);
         self

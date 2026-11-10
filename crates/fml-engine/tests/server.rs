@@ -1,4 +1,4 @@
-//! Внешний сервер в FHIRPath и типы ресурсов после resolve() (fhirpath-lab#97).
+//! External FHIRPath server access and resource types after resolve().
 #![cfg(feature = "fhirpath")]
 
 use std::sync::{Arc, Mutex};
