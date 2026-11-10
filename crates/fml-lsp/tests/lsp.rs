@@ -1,6 +1,8 @@
 //! The server driven as an editor drives it.
 
-use fml_check::Release;
+use std::sync::Arc;
+
+use fml_check::{CoreDefinitions, Release};
 use fml_lsp::Server;
 use serde_json::{Value, json};
 
@@ -28,7 +30,7 @@ struct Editor {
 
 impl Editor {
     fn open(text: &str) -> (Self, Value) {
-        let mut server = Server::with_release(Release::R5);
+        let mut server = Server::new(Arc::new(CoreDefinitions::new(Release::R5)));
         server.handle(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"capabilities": {}}}));
         let replies = server.handle(&json!({
             "jsonrpc": "2.0",
@@ -301,7 +303,7 @@ fn speaks_the_base_protocol() {
     }
     let mut output = Vec::new();
     let code = fml_lsp::run(
-        Server::with_release(Release::R5),
+        Server::new(Arc::new(CoreDefinitions::new(Release::R5))),
         &mut input.as_slice(),
         &mut output,
     )
