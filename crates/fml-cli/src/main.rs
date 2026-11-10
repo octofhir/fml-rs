@@ -99,6 +99,10 @@ enum Command {
         /// model with an XML form, JSON otherwise.
         #[arg(long, value_enum)]
         output_format: Option<DataFormat>,
+        /// Базовый URL FHIR-сервера для resolve() и %server. Включает доступ к серверу,
+        /// в том числе изменение ресурсов через %server; запускайте только доверенные карты.
+        #[arg(long, value_parser = parse_server_url)]
+        server_url: Option<url::Url>,
     },
     /// Read XML of a logical model into JSON, or write JSON of one as XML.
     Xml {
@@ -209,6 +213,7 @@ fn main() -> ExitCode {
             bundle,
             packages,
             output_format,
+            server_url,
         } => run(
             &map,
             &input,
@@ -216,10 +221,11 @@ fn main() -> ExitCode {
             fhir,
             &maps,
             &packages,
-            RunOutput {
+            RunOptions {
                 debug,
                 bundle,
                 format: output_format,
+                server_url,
             },
         ),
         Command::Xml { action } => xml(action),
@@ -598,11 +604,26 @@ fn load_map(path: &Path, sources: &mut Sources) -> Result<fml_model::StructureMa
     Ok(compiled.map)
 }
 
-/// How `fml run` writes its result.
-struct RunOutput {
+/// Настройки выполнения и вывода `fml run`.
+struct RunOptions {
     debug: bool,
     bundle: bool,
     format: Option<DataFormat>,
+    server_url: Option<url::Url>,
+}
+
+fn parse_server_url(value: &str) -> std::result::Result<url::Url, String> {
+    let url = url::Url::parse(value).map_err(|e| e.to_string())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("FHIR server URL must use http or https and include a host".to_owned());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("FHIR server URL must not contain credentials".to_owned());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("FHIR server URL must not contain a query or fragment".to_owned());
+    }
+    Ok(url)
 }
 
 /// The XML form of the logical models among package resources.
@@ -701,7 +722,7 @@ fn run(
     release: Release,
     imports: &[PathBuf],
     packages: &[String],
-    how: RunOutput,
+    how: RunOptions,
 ) -> Result<ExitCode> {
     let (definitions, package_resources) = definitions_with(release, packages)?;
     let model = xml_model(package_resources.iter().map(|r| &r.json));
@@ -766,10 +787,16 @@ fn run(
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
         .map_err(|e| format!("cannot start the runtime: {e}"))?;
     let result = runtime.block_on(async {
-        let expressions = FhirPathExpressions::with_templates(release, templates).await?;
+        let mut expressions = FhirPathExpressions::with_templates(release, templates).await?;
+        if let Some(url) = &how.server_url {
+            let provider = octofhir_fhir_model::HttpServerProvider::new(url.to_string())
+                .map_err(|e| e.to_string())?;
+            expressions = expressions.with_server_provider(std::sync::Arc::new(provider));
+        }
         Ok::<_, String>(
             Engine::new(&definitions, expressions)
                 .with_maps(&maps)

@@ -43,4 +43,21 @@ What each command is built on:
   output, with the `--fhir` and `--package` options of `check`. It is the default `lsp` feature;
   `--no-default-features` builds without it.
 
+## Внешний FHIR-сервер
+
+```sh
+fml run map.fml input.json --server-url https://example.org/fhir
+```
+
+`--server-url` задаёт базовый URL для `resolve()` и `%server` через существующий
+`HttpServerProvider`. Для относительной ссылки `BodyStructure/abc` провайдер
+читает `GET https://example.org/fhir/BodyStructure/abc`. Без этого флага внешние
+запросы отключены. URL должен использовать HTTP или HTTPS, без логина, пароля,
+query-параметров и фрагмента. Настройки авторизации этот провайдер пока не принимает.
+
+Флаг разрешает не только чтение: `%server` умеет создавать, изменять и удалять
+ресурсы, а `%server.at(url)` — обращаться к другому серверу. Включайте его только
+для доверенных карт. Отсутствующая ссылка даёт пустой результат; текущий FHIRPath
+так же обрабатывает ошибки чтения, включая отказ в доступе и сетевые ошибки.
+
 Part of [fml-rs](https://github.com/octofhir/fml-rs). Licensed under MIT or Apache-2.0.

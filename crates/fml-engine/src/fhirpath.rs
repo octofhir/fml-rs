@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fml_check::Release;
-use octofhir_fhir_model::ValidationProvider;
+use octofhir_fhir_model::{ServerProvider, ValidationProvider};
 use octofhir_fhirpath::evaluator::functions::HasTemplateIdOfFunctionEvaluator;
 use octofhir_fhirpath::{
     Collection, EvaluationContext, FhirPathEngine, FhirPathValue, create_function_registry,
@@ -17,16 +17,27 @@ use octofhir_fhirschema::{
 use crate::expressions::{Expressions, Item};
 
 /// FHIRPath for one FHIR release.
+#[derive(Clone)]
 pub struct FhirPathExpressions {
-    engine: FhirPathEngine,
+    engine: Arc<FhirPathEngine>,
     provider: Arc<dyn ModelProvider + Send + Sync>,
     /// For `conformsTo()`.
     validation: Option<Arc<dyn ValidationProvider>>,
+    server: Option<Arc<dyn ServerProvider>>,
 }
 
 impl FhirPathExpressions {
     pub async fn new(release: Release) -> Result<Self, String> {
         Self::with_templates(release, HashMap::new()).await
+    }
+
+    /// Подключает сервер для `resolve()` и `%server` через существующий API FHIRPath.
+    /// Без провайдера внешние запросы отключены. Права доступа задаёт провайдер:
+    /// `%server` поддерживает не только чтение, но и изменение ресурсов.
+    /// Клон разделяет движок и схемы, но провайдера можно задать отдельно для каждого запроса.
+    pub fn with_server_provider(mut self, provider: Arc<dyn ServerProvider>) -> Self {
+        self.server = Some(provider);
+        self
     }
 
     /// FHIRPath whose `hasTemplateIdOf(profileUrl)` (CDA) knows the templates of these profiles,
@@ -63,9 +74,10 @@ impl FhirPathExpressions {
             .await
             .ok();
         Ok(Self {
-            engine,
+            engine: Arc::new(engine),
             provider,
             validation,
+            server: None,
         })
     }
 
@@ -91,12 +103,13 @@ impl Expressions for FhirPathExpressions {
             Some(item) => self.collection(item).await?,
             None => Collection::empty(),
         };
-        let context = EvaluationContext::new(
+        let context = EvaluationContext::new_with_server(
             input,
             self.provider.clone(),
             None,
             self.validation.clone(),
             None,
+            self.server.clone(),
         );
         for (name, item) in variables {
             let mut values = self.collection(item).await?.into_vec();

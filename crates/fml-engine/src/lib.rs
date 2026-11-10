@@ -23,6 +23,8 @@ pub use expressions::{Expressions, Item, NoExpressions, bind_variables};
 #[cfg(feature = "fhirpath")]
 pub use fhirpath::FhirPathExpressions;
 pub use ids::{IdGenerator, RandomIds, SequentialIds};
+#[cfg(feature = "fhirpath")]
+pub use octofhir_fhir_model::ServerProvider;
 pub use terminology::{
     ConceptMapResolver, ConceptMapSet, NoConceptMaps, TranslateFuture, TranslateService,
     Translation, translate,

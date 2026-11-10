@@ -37,6 +37,7 @@ octofhir-fhirschema = { version = "0.3.35", default-features = false, optional =
 octofhir-fhir-model = { version = "0.1.19", default-features = false, optional = true }
 
 [dev-dependencies]
+async-trait = "0.1"
 fml-check = { path = "../fml-check", version = "0.2.6", features = ["fhirschema"] }
 fml-xml = { path = "../fml-xml" }
 tokio = { version = "1", features = ["macros", "rt"] }

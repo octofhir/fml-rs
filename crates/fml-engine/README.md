@@ -64,4 +64,45 @@ let output = Engine::new(&definitions, expressions)
 println!("{}", output.target);        // also: output.produced, output.warnings
 ```
 
+## Доступ к FHIR-серверу
+
+С фичей `fhirpath` метод `FhirPathExpressions::with_server_provider` принимает
+`Arc<dyn ServerProvider>` из `octofhir-fhir-model` (тип также доступен как
+`fml_engine::ServerProvider`). Он подключает существующий механизм FHIRPath:
+`resolve()` сначала ищет ресурс в текущем дереве, затем вызывает `read` провайдера
+для ссылки `Type/id`. Найденный ресурс сохраняет свой FHIR-тип. Неразрешённые ссылки
+дают пустой результат, как требует [спецификация](https://hl7.org/fhir/R5/fhirpath.html#functions).
+Абсолютные и версионные ссылки, а также поиск по canonical этим адаптером не добавляются.
+
+Внутри FHIR-сервера провайдер должен вызывать внутренние сервисы с правами текущего
+пользователя, а не ходить по HTTP в самого себя. Движок можно переиспользовать:
+
+```rust
+let shared_expressions = FhirPathExpressions::new(Release::R5).await?;
+let expressions = shared_expressions.clone().with_server_provider(request_provider);
+let output = Engine::new(&definitions, expressions)
+    .transform(&map, &input)
+    .await?;
+```
+
+Клоны разделяют движок, схемы и кэш выражений; провайдер и контекст вычисления
+не подменяются у других клонов. Не храните провайдер с правами пользователя
+в общем экземпляре. Это соответствует [модели выполнения FML](https://hl7.org/fhir/R5/mapping-language.html):
+доступ к внешним данным предоставляет вызывающее приложение.
+
+Для отдельного приложения подойдёт `octofhir_fhir_model::HttpServerProvider`
+с фичей `http-client` **в приложении**. Библиотека `fml-engine` сама HTTP не включает.
+Без провайдера внешние запросы отключены.
+
+Провайдер также доступен через `%server`, включая операции записи. Для недоверенных
+карт используйте провайдер с ограниченными правами; лимиты движка не заменяют
+авторизацию. Текущий FHIRPath превращает ошибки `read` в пустой результат:
+если вызывающее приложение должно завершать операцию при такой ошибке, сохраняйте
+её в провайдере и проверяйте после выполнения карты.
+
+Подключение сервера не восстанавливает корневой контекст для `contained`: при
+`evaluate(reference, resolve())` исходный ресурс по-прежнему недоступен.
+Для локальных ссылок вычисляйте путь от ресурса, например
+`evaluate(src, bodyStructure.reference.resolve())`.
+
 Part of [fml-rs](https://github.com/octofhir/fml-rs). Licensed under MIT or Apache-2.0.
