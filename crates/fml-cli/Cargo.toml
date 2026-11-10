@@ -22,12 +22,12 @@ default = ["lsp"]
 lsp = ["dep:fml-lsp"]
 
 [dependencies]
-fml-lsp = { path = "../fml-lsp", version = "0.2.6", optional = true }
-fml-syntax = { path = "../fml-syntax", version = "0.2.6" }
-fml-model = { path = "../fml-model", version = "0.2.6" }
-fml-check = { path = "../fml-check", version = "0.2.6", features = ["fhirschema"] }
-fml-engine = { path = "../fml-engine", version = "0.2.6", features = ["fhirpath"] }
-fml-xml = { path = "../fml-xml", version = "0.2.6" }
+fml-lsp = { path = "../fml-lsp", version = "0.2.7", optional = true }
+fml-syntax = { path = "../fml-syntax", version = "0.2.7" }
+fml-model = { path = "../fml-model", version = "0.2.7" }
+fml-check = { path = "../fml-check", version = "0.2.7", features = ["fhirschema"] }
+fml-engine = { path = "../fml-engine", version = "0.2.7", features = ["fhirpath"] }
+fml-xml = { path = "../fml-xml", version = "0.2.7" }
 tokio = { version = "1", features = ["rt", "net", "time"] }
 octofhir-fhir-model = { version = "0.1.19", default-features = false, features = ["http-client"] }
 octofhir-canonical-manager = { version = "0.2.11", default-features = false, features = ["sqlite"] }

@@ -24,9 +24,9 @@ fhirpath = [
 ]
 
 [dependencies]
-fml-syntax = { path = "../fml-syntax", version = "0.2.6" }
-fml-model = { path = "../fml-model", version = "0.2.6" }
-fml-check = { path = "../fml-check", version = "0.2.6" }
+fml-syntax = { path = "../fml-syntax", version = "0.2.7" }
+fml-model = { path = "../fml-model", version = "0.2.7" }
+fml-check = { path = "../fml-check", version = "0.2.7" }
 serde_json = { version = "1", features = ["preserve_order"] }
 uuid = { version = "1", features = ["v4"] }
 # Time zone names for the `z` format code: the IANA database is bundled, so it works the same
@@ -38,6 +38,6 @@ octofhir-fhir-model = { version = "0.1.19", default-features = false, optional =
 
 [dev-dependencies]
 async-trait = "0.1"
-fml-check = { path = "../fml-check", version = "0.2.6", features = ["fhirschema"] }
+fml-check = { path = "../fml-check", version = "0.2.7", features = ["fhirschema"] }
 fml-xml = { path = "../fml-xml" }
 tokio = { version = "1", features = ["macros", "rt"] }
